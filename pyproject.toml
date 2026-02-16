@@ -1,0 +1,53 @@
+[project]
+name = "agnosticq"
+version = "0.1.0"
+description = "Transport-agnostic async task queue using JSON-RPC 2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.0",
+    "ruff>=0.15.1",
+]
+
+[project.optional-dependencies]
+sqs = ["aiobotocore>=2.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agnosticq"]
+
+[tool.ruff]
+exclude = [
+    ".git",
+    ".github",
+    ".git-rewrite",
+    ".mypy_cache",
+    ".env",
+    "__pycache__",
+    "__pypackages__",
+    ".ruff_cache",
+    ".tox",
+    ".venv",
+    ".vscode",
+    "docs",
+]
+
+line-length = 80
+indent-width = 4
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E203"]
+
+[tool.ruff.lint.isort]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = false
