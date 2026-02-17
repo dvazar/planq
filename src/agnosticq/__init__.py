@@ -1,3 +1,33 @@
+"""agnosticq — transport-agnostic async task queue for Python 3.12+.
+
+Public API
+----------
+
+Core classes:
+
+- :class:`~agnosticq.consumer.AgnosticConsumer` — main consumer; register
+  handlers with :meth:`~agnosticq.consumer.AgnosticConsumer.task` and start
+  with :meth:`~agnosticq.consumer.AgnosticConsumer.run`.
+- :class:`~agnosticq.base.BaseBroker` — base class for broker providers.
+- :class:`~agnosticq.message.BrokerMessage` — base class for message wrappers.
+
+Configuration:
+
+- :class:`~agnosticq.models.ConsumerSettings` — concurrency and retry tuning.
+
+JSON-RPC models:
+
+- :class:`~agnosticq.models.JsonRpcRequest`
+- :class:`~agnosticq.models.JsonRpcResponse`
+- :class:`~agnosticq.models.JsonRpcErrorDetail`
+
+Enumerations:
+
+- :class:`~agnosticq.enums.ExecutionMode` — ASYNC / THREAD / PROCESS.
+- :class:`~agnosticq.enums.Header` — standard broker header names.
+- :class:`~agnosticq.enums.JsonRpcError` — standard JSON-RPC error codes.
+"""
+
 import logging
 
 from agnosticq.base import BaseBroker

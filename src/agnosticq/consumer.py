@@ -1,3 +1,5 @@
+"""Core message consumer implementing the smart-consumer architecture."""
+
 from __future__ import annotations
 
 import asyncio
@@ -24,12 +26,37 @@ logger = logging.getLogger(__name__)
 
 
 class AgnosticConsumer:
+    """Transport-agnostic async task queue consumer.
+
+    Processes messages through a fixed middleware pipeline:
+    TTL check → retry check → routing → execution → ack/nack.
+
+    Register handlers with the :meth:`task` decorator, then call
+    :meth:`run` to start consuming. Handles SIGINT/SIGTERM for
+    graceful shutdown.
+
+    Attributes:
+        broker: The broker instance used to publish and consume messages.
+        routes: Mapping of method name to ``(handler, ExecutionMode)`` pair.
+    """
+
     def __init__(
         self,
         broker: BaseBroker,
         process_workers: int | None = None,
         settings: ConsumerSettings | None = None,
     ) -> None:
+        """Initialize the consumer with a broker and optional settings.
+
+        Args:
+            broker: Connected (or lazy) broker instance.
+            process_workers: Number of worker processes for
+                ``ExecutionMode.PROCESS`` tasks. ``None`` disables
+                process-pool execution.
+            settings: Runtime tuning parameters. Defaults to
+                :class:`~agnosticq.models.ConsumerSettings` with default
+                values if not provided.
+        """
         self.broker = broker
         self.routes: dict[str, tuple[Callable[..., Any], ExecutionMode]] = {}
         self._pool: ProcessPoolExecutor | None = (
@@ -46,6 +73,24 @@ class AgnosticConsumer:
         name: str,
         mode: ExecutionMode = ExecutionMode.ASYNC,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """Register a callable as the handler for a named JSON-RPC method.
+
+        Usage::
+
+            @consumer.task("my.method", mode=ExecutionMode.THREAD)
+            def handle(params):
+                ...
+
+        Args:
+            name: JSON-RPC method name that routes to this handler.
+            mode: Execution strategy for the handler. Defaults to
+                ``ExecutionMode.ASYNC``.
+
+        Returns:
+            A decorator that registers the wrapped function and returns
+            it unchanged.
+        """
+
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             self.routes[name] = (func, mode)
             return func
@@ -172,6 +217,15 @@ class AgnosticConsumer:
             sem.release()
 
     async def run(self, queue: str) -> None:
+        """Start consuming messages from the given queue until shutdown.
+
+        Installs SIGINT/SIGTERM handlers that trigger a clean drain of
+        in-flight messages before exiting. Shuts down the process pool
+        (if any) after the event loop exits.
+
+        Args:
+            queue: Source queue name or URL to consume from.
+        """
         shutdown_event = asyncio.Event()
         loop = asyncio.get_running_loop()
 
