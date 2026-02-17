@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any, override
+from typing import TYPE_CHECKING, Any, Final, override
 
 from aiobotocore.session import AioSession
 
@@ -16,6 +16,12 @@ from agnosticq.types import Headers
 
 if TYPE_CHECKING:
     from agnosticq.types import Seconds
+
+_SQS_MAX_BATCH_SIZE: Final = 10
+"""Hard SQS limit on messages per ``receive_message`` call."""
+
+_SQS_WAIT_SECONDS: Final = 20
+"""Maximum long-polling wait time supported by SQS."""
 
 logger = logging.getLogger(__name__)
 
@@ -205,18 +211,24 @@ class SqsBroker(BaseBroker):
         self,
         queue: str,
         *,
-        prefetch: int = 10,
+        prefetch: int = _SQS_MAX_BATCH_SIZE,
+        wait_time_seconds: int = _SQS_WAIT_SECONDS,
     ) -> AsyncIterator[SqsBrokerMessage]:
         """Long-poll an SQS queue and yield parsed messages indefinitely.
 
-        Uses ``WaitTimeSeconds=20`` and batch size ``min(prefetch, 10)``
-        (SQS maximum). Poison messages (unparseable bodies) are logged
-        via :meth:`~agnosticq.base.BaseBroker.on_poison_message` and
-        then deleted.
+        Uses ``_SQS_WAIT_SECONDS`` by default and batch size
+        ``min(prefetch, _SQS_MAX_BATCH_SIZE)`` (SQS maximum). Poison
+        messages (unparseable bodies) are logged via
+        :meth:`~agnosticq.base.BaseBroker.on_poison_message` and then
+        deleted.
 
         Args:
             queue: Source SQS queue URL.
-            prefetch: Desired batch size (capped at 10 by SQS).
+            prefetch: Desired batch size (capped at ``_SQS_MAX_BATCH_SIZE``
+                by SQS).
+            wait_time_seconds: SQS long-polling duration in seconds (0–20).
+                Defaults to ``_SQS_WAIT_SECONDS`` (20). Use 0 in tests to
+                avoid blocking.
 
         Yields:
             :class:`SqsBrokerMessage` instances ready for processing.
@@ -224,8 +236,8 @@ class SqsBroker(BaseBroker):
         while True:
             resp = await self._client.receive_message(
                 QueueUrl=queue,
-                MaxNumberOfMessages=min(prefetch, 10),
-                WaitTimeSeconds=20,
+                MaxNumberOfMessages=min(prefetch, _SQS_MAX_BATCH_SIZE),
+                WaitTimeSeconds=wait_time_seconds,
                 AttributeNames=["All"],
                 MessageAttributeNames=["All"],
             )
