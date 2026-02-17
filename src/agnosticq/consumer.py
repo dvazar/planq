@@ -152,8 +152,21 @@ class AgnosticConsumer:
         # 3. Route
         route = self.routes.get(msg.body.method)
         if route is None:
-            logger.warning("No route for method: %s", msg.body.method)
-            await msg.reject()
+            if msg.delivery_count > self._settings.unroutable_max_retries:
+                logger.error(
+                    "No route for method %s after %d attempts, rejecting",
+                    msg.body.method,
+                    msg.delivery_count,
+                )
+                await msg.reject()
+                return
+            backoff = self._calculate_backoff(msg.delivery_count)
+            logger.warning(
+                "No route for method: %s, nacking with %.1fs delay",
+                msg.body.method,
+                backoff,
+            )
+            await msg.nack(backoff)
             return
 
         handler, mode = route

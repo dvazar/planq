@@ -13,23 +13,22 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class ConsumerSettings:
-    """Immutable runtime settings for ``AgnosticConsumer``.
-
-    Attributes:
-        concurrency: Maximum number of messages processed concurrently.
-        retry_base_delay: Initial backoff delay in seconds (before jitter).
-        retry_max_delay: Upper bound for calculated backoff delay in seconds.
-        retry_jitter: Upper bound of the uniform jitter added to each backoff.
-    """
+    """Immutable runtime settings for ``AgnosticConsumer``."""
 
     # Maximum number of messages processed concurrently.
     concurrency: int = 10
+
     # Initial backoff delay in seconds; doubles with each retry attempt.
     retry_base_delay: float = 1.0
+
     # Maximum backoff delay in seconds; caps exponential growth.
     retry_max_delay: float = 300.0
+
     # Upper bound for uniform jitter added to the backoff value.
     retry_jitter: float = 1.0  # uniform(0, jitter)
+
+    # Max requeue attempts when no route matches the method name.
+    unroutable_max_retries: int = 10
 
 
 class JsonRpcRequest(BaseModel):
