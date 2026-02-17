@@ -7,6 +7,7 @@ import logging
 import signal
 import time
 from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from random import uniform
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -78,7 +79,7 @@ class AgnosticConsumer:
         Usage::
 
             @consumer.task("my.method", mode=ExecutionMode.THREAD)
-            def handle(params):
+            def handle(name: str, greeting: str = "Hi"):
                 ...
 
         Args:
@@ -111,11 +112,18 @@ class AgnosticConsumer:
         mode: ExecutionMode,
         params: Any,
     ) -> Any:
+        args: tuple[Any, ...] = ()
+        kwargs: dict[str, Any] = {}
+        if isinstance(params, list):
+            args = tuple(params)
+        elif isinstance(params, dict):
+            kwargs = params
+
         match mode:
             case ExecutionMode.ASYNC:
-                return await handler(params)
+                return await handler(*args, **kwargs)
             case ExecutionMode.THREAD:
-                return await asyncio.to_thread(handler, params)
+                return await asyncio.to_thread(handler, *args, **kwargs)
             case ExecutionMode.PROCESS:
                 if self._pool is None:
                     raise RuntimeError(
@@ -123,7 +131,8 @@ class AgnosticConsumer:
                         "set process_workers in AgnosticConsumer"
                     )
                 loop = asyncio.get_running_loop()
-                return await loop.run_in_executor(self._pool, handler, params)
+                fn = partial(handler, *args, **kwargs)
+                return await loop.run_in_executor(self._pool, fn)
 
     async def _process_message(self, msg: BrokerMessage) -> None:
         # 1. Check TTL
