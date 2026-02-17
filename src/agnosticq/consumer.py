@@ -5,14 +5,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
-import time
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from random import uniform
 from typing import TYPE_CHECKING, Any, Callable
 
 from agnosticq.base import BaseBroker
-from agnosticq.enums import ExecutionMode, Header, JsonRpcError
+from agnosticq.enums import ExecutionMode, JsonRpcError
+from agnosticq.middleware import (
+    MaxRetriesMiddleware,
+    SkipMessage,
+    TtlMiddleware,
+)
 from agnosticq.models import (
     ConsumerSettings,
     JsonRpcErrorDetail,
@@ -21,6 +25,7 @@ from agnosticq.models import (
 
 if TYPE_CHECKING:
     from agnosticq.message import BrokerMessage
+    from agnosticq.middleware import Middleware
     from agnosticq.types import Seconds
 
 logger = logging.getLogger(__name__)
@@ -29,8 +34,8 @@ logger = logging.getLogger(__name__)
 class AgnosticConsumer:
     """Transport-agnostic async task queue consumer.
 
-    Processes messages through a fixed middleware pipeline:
-    TTL check → retry check → routing → execution → ack/nack.
+    Processes messages through a pluggable middleware pipeline followed by
+    routing and execution. Built-in middlewares handle TTL and retry checks.
 
     Register handlers with the :meth:`task` decorator, then call
     :meth:`run` to start consuming. Handles SIGINT/SIGTERM for
@@ -46,6 +51,7 @@ class AgnosticConsumer:
         broker: BaseBroker,
         process_workers: int | None = None,
         settings: ConsumerSettings | None = None,
+        middlewares: list[Middleware] | None = None,
     ) -> None:
         """Initialize the consumer with a broker and optional settings.
 
@@ -57,6 +63,10 @@ class AgnosticConsumer:
             settings: Runtime tuning parameters. Defaults to
                 :class:`~agnosticq.models.ConsumerSettings` with default
                 values if not provided.
+            middlewares: Ordered list of
+                :class:`~agnosticq.middleware.Middleware` instances. Defaults
+                to ``[TtlMiddleware(), MaxRetriesMiddleware()]`` when ``None``.
+                Pass an empty list to disable all middleware.
         """
         self.broker = broker
         self.routes: dict[str, tuple[Callable[..., Any], ExecutionMode]] = {}
@@ -67,6 +77,11 @@ class AgnosticConsumer:
         )
         self._settings = (
             settings if settings is not None else ConsumerSettings()
+        )
+        self._middlewares: list[Middleware] = (
+            middlewares
+            if middlewares is not None
+            else [TtlMiddleware(), MaxRetriesMiddleware()]
         )
 
     def task(
@@ -135,21 +150,23 @@ class AgnosticConsumer:
                 return await loop.run_in_executor(self._pool, fn)
 
     async def _process_message(self, msg: BrokerMessage) -> None:
-        # 1. Check TTL
-        expire_at = msg.headers.get(Header.EXPIRE_AT)
-        if expire_at is not None and time.time() > float(expire_at):
-            logger.debug("Message expired, rejecting: %s", msg.body.method)
-            await msg.reject()
+        # 1. Run before_process_message middleware hooks
+        try:
+            for mw in self._middlewares:
+                await mw.before_process_message(self, msg)
+        except SkipMessage:
+            for mw in self._middlewares:
+                try:
+                    await mw.after_skip_message(self, msg)
+                except Exception as exc:
+                    logger.exception(
+                        "Middleware %s.after_skip_message raised an error",
+                        type(mw).__name__,
+                        exc_info=exc,
+                    )
             return
 
-        # 2. Check retries
-        max_retries = msg.headers.get(Header.MAX_RETRIES)
-        if max_retries is not None and msg.delivery_count > int(max_retries):
-            logger.debug("Max retries exceeded, rejecting: %s", msg.body.method)
-            await msg.reject()
-            return
-
-        # 3. Route
+        # 2. Route
         route = self.routes.get(msg.body.method)
         if route is None:
             if msg.delivery_count > self._settings.unroutable_max_retries:
@@ -171,13 +188,29 @@ class AgnosticConsumer:
 
         handler, mode = route
 
-        # 4. Execute handler
+        # 3. Execute handler
         payload: Any = None
         handler_exc: Exception | None = None
         try:
             payload = await self._execute(handler, mode, msg.body.params)
         except Exception as exc:
             handler_exc = exc
+
+        # 4. Run after_process_message middleware hooks
+        for mw in self._middlewares:
+            try:
+                await mw.after_process_message(
+                    self,
+                    msg,
+                    result=payload,
+                    exception=handler_exc,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Middleware %s.after_process_message raised an error",
+                    type(mw).__name__,
+                    exc_info=exc,
+                )
 
         # 5. Notification flow (no id → fire-and-forget)
         if msg.correlation_id is None:
@@ -214,14 +247,36 @@ class AgnosticConsumer:
         else:
             response = JsonRpcResponse(id=msg.correlation_id, result=payload)
 
+        # 7. Run before_publish_response middleware hooks
+        out_headers: dict[str, str] = {}
+        for mw in self._middlewares:
+            try:
+                await mw.before_publish_response(
+                    self,
+                    msg,
+                    response,
+                    out_headers,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Middleware %s.before_publish_response raised an error",
+                    type(mw).__name__,
+                    exc_info=exc,
+                )
+
         try:
-            await self.broker.publish(msg.reply_to, response)
-        except Exception:
+            await self.broker.publish(
+                msg.reply_to,
+                response,
+                headers=out_headers or None,
+            )
+        except Exception as exc:
             backoff = self._calculate_backoff(msg.delivery_count)
             logger.exception(
                 "Failed to publish response for %s, nacking with %.1fs delay",
                 msg.body.method,
                 backoff,
+                exc_info=exc,
             )
             await msg.nack(backoff)
             return

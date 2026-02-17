@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agnosticq.message import BrokerMessage
     from agnosticq.models import JsonRpcRequest, JsonRpcResponse
+    from agnosticq.types import Headers
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ class BaseBroker:
         reply_to: str | None = None,
         max_retries: int | None = None,
         expire_at: float | None = None,
+        headers: Headers | None = None,
     ) -> str:
         """Serialize and publish a JSON-RPC message to a queue.
 
@@ -74,6 +76,10 @@ class BaseBroker:
                 permanently rejected. Stored as a broker header.
             expire_at: Unix timestamp after which the message should be
                 discarded. Stored as a broker header.
+            headers: Optional mapping of additional user-defined headers to
+                attach to the message. Values are always stored as strings.
+                Do not shadow reserved keys used by the framework
+                (``ReplyTo``, ``MaxRetries``, ``ExpireAt``).
 
         Returns:
             The provider-assigned message identifier string.

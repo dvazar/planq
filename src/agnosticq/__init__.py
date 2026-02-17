@@ -26,6 +26,13 @@ Enumerations:
 - :class:`~agnosticq.enums.ExecutionMode` — ASYNC / THREAD / PROCESS.
 - :class:`~agnosticq.enums.Header` — standard broker header names.
 - :class:`~agnosticq.enums.JsonRpcError` — standard JSON-RPC error codes.
+
+Middleware:
+
+- :class:`~agnosticq.middleware.Middleware` — base class for lifecycle hooks.
+- :class:`~agnosticq.middleware.SkipMessage` — abort message processing.
+- :class:`~agnosticq.middleware.TtlMiddleware` — built-in TTL enforcement.
+- :class:`~agnosticq.middleware.MaxRetriesMiddleware` — built-in retry cap.
 """
 
 import logging
@@ -34,6 +41,12 @@ from agnosticq.base import BaseBroker
 from agnosticq.consumer import AgnosticConsumer
 from agnosticq.enums import ExecutionMode, Header, JsonRpcError
 from agnosticq.message import BrokerMessage
+from agnosticq.middleware import (
+    MaxRetriesMiddleware,
+    Middleware,
+    SkipMessage,
+    TtlMiddleware,
+)
 from agnosticq.models import (
     ConsumerSettings,
     JsonRpcErrorDetail,
@@ -55,4 +68,8 @@ __all__ = [
     "JsonRpcErrorDetail",
     "JsonRpcRequest",
     "JsonRpcResponse",
+    "MaxRetriesMiddleware",
+    "Middleware",
+    "SkipMessage",
+    "TtlMiddleware",
 ]

@@ -160,11 +160,17 @@ class SqsBroker(BaseBroker):
         reply_to: str | None = None,
         max_retries: int | None = None,
         expire_at: float | None = None,
+        headers: Headers | None = None,
     ) -> str:
         """Serialize and send a JSON-RPC message to an SQS queue.
 
-        Optional metadata is encoded as ``MessageAttributes`` with
-        ``DataType=Number`` (or ``String`` for ``ReplyTo``).
+        Framework metadata is encoded as ``MessageAttributes`` with
+        ``DataType=Number`` (or ``String`` for ``ReplyTo``). User-defined
+        ``headers`` are appended after framework attributes using
+        ``DataType=String``.
+
+        Reserved attribute names that must not appear in ``headers``:
+        ``ReplyTo``, ``MaxRetries``, ``ExpireAt``.
 
         Args:
             queue: Destination SQS queue URL.
@@ -173,6 +179,8 @@ class SqsBroker(BaseBroker):
             max_retries: Maximum delivery attempts stored as
                 ``MaxRetries`` attribute.
             expire_at: Unix timestamp stored as ``ExpireAt`` attribute.
+            headers: Optional user-defined headers to attach as SQS
+                ``MessageAttributes`` with ``DataType=String``.
 
         Returns:
             The SQS ``MessageId`` of the sent message.
@@ -195,6 +203,9 @@ class SqsBroker(BaseBroker):
                 "DataType": "Number",
                 "StringValue": str(expire_at),
             }
+        if headers:
+            for key, value in headers.items():
+                attrs[key] = {"DataType": "String", "StringValue": value}
 
         kwargs: dict[str, Any] = {
             "QueueUrl": queue,
