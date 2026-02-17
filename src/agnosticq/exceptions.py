@@ -23,3 +23,24 @@ class MaxRetriesExceeded(AgnosticQError):
 
 class MethodNotFound(AgnosticQError):
     """Raised when no registered handler exists for a given method name."""
+
+
+class FeatureNotSupportedError(AgnosticQError):
+    """Raised when a feature is not supported by the broker provider.
+
+    Example: passing ``delay`` to a provider with no native
+    scheduled-delivery capability.
+    """
+
+    def __init__(self, feature: str, provider: str) -> None:
+        """Initialize with the unsupported feature and provider name.
+
+        Args:
+            feature: Name of the unsupported feature (e.g. ``"delay"``).
+            provider: Human-readable broker provider name (e.g. ``"RabbitMQ"``).
+        """
+        super().__init__(
+            f"{provider} does not support the '{feature}' feature."
+        )
+        self.feature = feature
+        self.provider = provider

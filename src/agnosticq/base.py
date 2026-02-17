@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agnosticq.message import BrokerMessage
     from agnosticq.models import JsonRpcRequest, JsonRpcResponse
-    from agnosticq.types import Headers
+    from agnosticq.types import Headers, Seconds
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +60,10 @@ class BaseBroker:
         queue: str,
         rpc: JsonRpcRequest | JsonRpcResponse,
         *,
-        reply_to: str | None = None,
+        delay: Seconds | None = None,
         max_retries: int | None = None,
         expire_at: float | None = None,
+        reply_to: str | None = None,
         headers: Headers | None = None,
     ) -> str:
         """Serialize and publish a JSON-RPC message to a queue.
@@ -70,12 +71,18 @@ class BaseBroker:
         Args:
             queue: Destination queue name or URL.
             rpc: The JSON-RPC request or response to publish.
-            reply_to: Optional queue name where the consumer should send
-                its response (request/response pattern).
+            delay: Seconds to defer delivery before the message becomes visible
+                to consumers. Behavior is provider-specific; see the concrete
+                broker's docstring for the supported range. ``None`` means
+                immediate delivery. Providers without native scheduled-delivery
+                support raise
+                :exc:`~agnosticq.exceptions.FeatureNotSupportedError`.
             max_retries: Maximum delivery attempts before the message is
                 permanently rejected. Stored as a broker header.
             expire_at: Unix timestamp after which the message should be
                 discarded. Stored as a broker header.
+            reply_to: Optional queue name where the consumer should send
+                its response (request/response pattern).
             headers: Optional mapping of additional user-defined headers to
                 attach to the message. Values are always stored as strings.
                 Do not shadow reserved keys used by the framework

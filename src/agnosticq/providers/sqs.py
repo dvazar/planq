@@ -23,6 +23,9 @@ _SQS_MAX_BATCH_SIZE: Final = 10
 _SQS_WAIT_SECONDS: Final = 20
 """Maximum long-polling wait time supported by SQS."""
 
+_SQS_MAX_DELAY_SECONDS: Final = 900
+"""Maximum ``DelaySeconds`` value supported by SQS (15 minutes)."""
+
 logger = logging.getLogger(__name__)
 
 
@@ -117,6 +120,10 @@ class SqsBroker(BaseBroker):
     Connects lazily on :meth:`connect` and tears down on :meth:`disconnect`.
     Headers are mapped to SQS ``MessageAttributes`` with ``DataType=Number``.
 
+    Maximum supported ``delay`` is ``_SQS_MAX_DELAY_SECONDS`` (900 s / 15 min).
+    Values exceeding this limit are rejected by SQS with a
+    ``ParamValidationError``.
+
     Attributes:
         dsn: SQS endpoint URL (e.g. ``http://localhost:4566`` for LocalStack,
             or the full AWS regional endpoint).
@@ -157,9 +164,10 @@ class SqsBroker(BaseBroker):
         queue: str,
         rpc: JsonRpcRequest | JsonRpcResponse,
         *,
-        reply_to: str | None = None,
+        delay: Seconds | None = None,
         max_retries: int | None = None,
         expire_at: float | None = None,
+        reply_to: str | None = None,
         headers: Headers | None = None,
     ) -> str:
         """Serialize and send a JSON-RPC message to an SQS queue.
@@ -175,10 +183,14 @@ class SqsBroker(BaseBroker):
         Args:
             queue: Destination SQS queue URL.
             rpc: JSON-RPC request or response to send.
-            reply_to: Optional queue URL for the consumer's response.
+            delay: Seconds before the message becomes visible. SQS accepts
+                0–``_SQS_MAX_DELAY_SECONDS`` (15 min). Values outside this
+                range are rejected by SQS directly. ``None`` means immediate
+                delivery.
             max_retries: Maximum delivery attempts stored as
                 ``MaxRetries`` attribute.
             expire_at: Unix timestamp stored as ``ExpireAt`` attribute.
+            reply_to: Optional queue URL for the consumer's response.
             headers: Optional user-defined headers to attach as SQS
                 ``MessageAttributes`` with ``DataType=String``.
 
@@ -211,6 +223,8 @@ class SqsBroker(BaseBroker):
             "QueueUrl": queue,
             "MessageBody": message_body,
         }
+        if delay is not None:
+            kwargs["DelaySeconds"] = int(delay)
         if attrs:
             kwargs["MessageAttributes"] = attrs
 

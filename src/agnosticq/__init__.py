@@ -40,6 +40,7 @@ import logging
 from agnosticq.base import BaseBroker
 from agnosticq.consumer import AgnosticConsumer
 from agnosticq.enums import ExecutionMode, Header, JsonRpcError
+from agnosticq.exceptions import FeatureNotSupportedError
 from agnosticq.message import BrokerMessage
 from agnosticq.middleware import (
     MaxRetriesMiddleware,
@@ -63,6 +64,7 @@ __all__ = [
     "BrokerMessage",
     "ConsumerSettings",
     "ExecutionMode",
+    "FeatureNotSupportedError",
     "Header",
     "JsonRpcError",
     "JsonRpcErrorDetail",
