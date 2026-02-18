@@ -7,9 +7,9 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from agnosticq.message import BrokerMessage
-    from agnosticq.models import JsonRpcRequest, JsonRpcResponse
-    from agnosticq.types import Headers, Seconds
+    from qanat.message import BrokerMessage
+    from qanat.models import JsonRpcRequest, JsonRpcResponse
+    from qanat.types import Headers, Seconds
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ class BaseBroker:
                 broker's docstring for the supported range. ``None`` means
                 immediate delivery. Providers without native scheduled-delivery
                 support raise
-                :exc:`~agnosticq.exceptions.FeatureNotSupportedError`.
+                :exc:`~qanat.exceptions.FeatureNotSupportedError`.
             max_retries: Maximum delivery attempts before the message is
                 permanently rejected. Stored as a broker header.
             expire_at: Unix timestamp after which the message should be
@@ -112,7 +112,7 @@ class BaseBroker:
             prefetch: Maximum number of messages to fetch per poll.
 
         Yields:
-            :class:`~agnosticq.message.BrokerMessage` instances ready
+            :class:`~qanat.message.BrokerMessage` instances ready
             for processing.
 
         Raises:

@@ -1,11 +1,11 @@
-"""Custom exceptions for the agnosticq package."""
+"""Custom exceptions for the qanat package."""
 
 
-class AgnosticQError(Exception):
-    """Base exception for all agnosticq errors."""
+class QanatError(Exception):
+    """Base exception for all qanat errors."""
 
 
-class MessageExpired(AgnosticQError):
+class MessageExpired(QanatError):
     """Raised when a message's TTL has been exceeded.
 
     The consumer rejects the message without retrying when
@@ -13,7 +13,7 @@ class MessageExpired(AgnosticQError):
     """
 
 
-class MaxRetriesExceeded(AgnosticQError):
+class MaxRetriesExceeded(QanatError):
     """Raised when a message has exhausted its retry budget.
 
     The consumer rejects the message permanently when
@@ -21,11 +21,11 @@ class MaxRetriesExceeded(AgnosticQError):
     """
 
 
-class MethodNotFound(AgnosticQError):
+class MethodNotFound(QanatError):
     """Raised when no registered handler exists for a given method name."""
 
 
-class FeatureNotSupportedError(AgnosticQError):
+class FeatureNotSupportedError(QanatError):
     """Raised when a feature is not supported by the broker provider.
 
     Example: passing ``delay`` to a provider with no native

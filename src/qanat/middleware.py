@@ -1,17 +1,17 @@
-"""Pluggable middleware system for AgnosticConsumer lifecycle hooks."""
+"""Pluggable middleware system for QanatConsumer lifecycle hooks."""
 
 from __future__ import annotations
 
 import time
 from typing import TYPE_CHECKING, Any
 
-from agnosticq.enums import Header
+from qanat.enums import Header
 
 if TYPE_CHECKING:
-    from agnosticq.consumer import AgnosticConsumer
-    from agnosticq.message import BrokerMessage
-    from agnosticq.models import JsonRpcResponse
-    from agnosticq.types import Headers
+    from qanat.consumer import QanatConsumer
+    from qanat.message import BrokerMessage
+    from qanat.models import JsonRpcResponse
+    from qanat.types import Headers
 
 
 class SkipMessage(Exception):
@@ -32,7 +32,7 @@ class SkipMessage(Exception):
 
 
 class Middleware:
-    """Base class for AgnosticConsumer lifecycle hooks.
+    """Base class for QanatConsumer lifecycle hooks.
 
     All hook methods are no-ops by default. Subclass and override only
     the hooks you need. Hooks are called in registration order for
@@ -58,13 +58,13 @@ class Middleware:
 
     async def before_process_message(
         self,
-        consumer: AgnosticConsumer,
+        consumer: QanatConsumer,
         msg: BrokerMessage,
     ) -> None:
         """Called before routing and handler execution.
 
         Args:
-            consumer: The :class:`~agnosticq.consumer.AgnosticConsumer`
+            consumer: The :class:`~qanat.consumer.QanatConsumer`
                 instance processing the message.
             msg: The incoming message. Headers and ``body.params`` may be
                 mutated in-place.
@@ -72,7 +72,7 @@ class Middleware:
 
     async def after_process_message(
         self,
-        consumer: AgnosticConsumer,
+        consumer: QanatConsumer,
         msg: BrokerMessage,
         *,
         result: Any = None,
@@ -84,7 +84,7 @@ class Middleware:
         Exceptions raised here are caught and logged; processing continues.
 
         Args:
-            consumer: The :class:`~agnosticq.consumer.AgnosticConsumer`
+            consumer: The :class:`~qanat.consumer.QanatConsumer`
                 instance processing the message.
             msg: The message that was processed.
             result: The return value of the handler, or ``None`` on failure.
@@ -94,7 +94,7 @@ class Middleware:
 
     async def after_skip_message(
         self,
-        consumer: AgnosticConsumer,
+        consumer: QanatConsumer,
         msg: BrokerMessage,
     ) -> None:
         """Called when a middleware raised :class:`SkipMessage`.
@@ -102,14 +102,14 @@ class Middleware:
         Exceptions raised here are caught and logged.
 
         Args:
-            consumer: The :class:`~agnosticq.consumer.AgnosticConsumer`
+            consumer: The :class:`~qanat.consumer.QanatConsumer`
                 instance processing the message.
             msg: The message that was skipped.
         """
 
     async def before_publish_response(
         self,
-        consumer: AgnosticConsumer,
+        consumer: QanatConsumer,
         msg: BrokerMessage,
         response: JsonRpcResponse,
         headers: Headers,
@@ -124,10 +124,10 @@ class Middleware:
         Exceptions raised here are caught and logged; publishing continues.
 
         Args:
-            consumer: The :class:`~agnosticq.consumer.AgnosticConsumer`
+            consumer: The :class:`~qanat.consumer.QanatConsumer`
                 instance processing the message.
             msg: The original request message.
-            response: The :class:`~agnosticq.models.JsonRpcResponse` about
+            response: The :class:`~qanat.models.JsonRpcResponse` about
                 to be published.
             headers: Mutable ``dict[str, str]`` to populate with custom
                 SQS ``MessageAttributes`` (all values treated as ``String``
@@ -146,7 +146,7 @@ class TtlMiddleware(Middleware):
 
     async def before_process_message(
         self,
-        consumer: AgnosticConsumer,
+        consumer: QanatConsumer,
         msg: BrokerMessage,
     ) -> None:
         """Reject the message if its TTL has expired.
@@ -175,7 +175,7 @@ class MaxRetriesMiddleware(Middleware):
 
     async def before_process_message(
         self,
-        consumer: AgnosticConsumer,
+        consumer: QanatConsumer,
         msg: BrokerMessage,
     ) -> None:
         """Reject the message if it has exceeded max retries.

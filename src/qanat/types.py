@@ -1,4 +1,4 @@
-"""Shared type aliases for the agnosticq package.
+"""Shared type aliases for the qanat package.
 
 All aliases use Python 3.12 ``type`` statement syntax.
 

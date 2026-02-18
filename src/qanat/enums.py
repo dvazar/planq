@@ -1,4 +1,4 @@
-"""Enumerations used throughout agnosticq."""
+"""Enumerations used throughout qanat."""
 
 from enum import IntEnum, StrEnum
 

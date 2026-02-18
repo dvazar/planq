@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 if TYPE_CHECKING:
-    from agnosticq.types import JsonRpcId, JsonRpcParams, JsonRpcVersion
+    from qanat.types import JsonRpcId, JsonRpcParams, JsonRpcVersion
 
 
 @dataclass(frozen=True, slots=True)
 class ConsumerSettings:
-    """Immutable runtime settings for ``AgnosticConsumer``."""
+    """Immutable runtime settings for ``QanatConsumer``."""
 
     # Maximum number of messages processed concurrently.
     concurrency: int = 10
@@ -57,7 +57,7 @@ class JsonRpcErrorDetail(BaseModel):
     Follows the JSON-RPC 2.0 error object specification.
     """
 
-    # Numeric error code (use :class:`~agnosticq.enums.JsonRpcError` constants).
+    # Numeric error code (use :class:`~qanat.enums.JsonRpcError` constants).
     code: int
     # Human-readable error description.
     message: str

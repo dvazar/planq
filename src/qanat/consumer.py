@@ -10,28 +10,28 @@ from functools import partial
 from random import uniform
 from typing import TYPE_CHECKING, Any, Callable
 
-from agnosticq.base import BaseBroker
-from agnosticq.enums import ExecutionMode, JsonRpcError
-from agnosticq.middleware import (
+from qanat.base import BaseBroker
+from qanat.enums import ExecutionMode, JsonRpcError
+from qanat.middleware import (
     MaxRetriesMiddleware,
     SkipMessage,
     TtlMiddleware,
 )
-from agnosticq.models import (
+from qanat.models import (
     ConsumerSettings,
     JsonRpcErrorDetail,
     JsonRpcResponse,
 )
 
 if TYPE_CHECKING:
-    from agnosticq.message import BrokerMessage
-    from agnosticq.middleware import Middleware
-    from agnosticq.types import Seconds
+    from qanat.message import BrokerMessage
+    from qanat.middleware import Middleware
+    from qanat.types import Seconds
 
 logger = logging.getLogger(__name__)
 
 
-class AgnosticConsumer:
+class QanatConsumer:
     """Transport-agnostic async task queue consumer.
 
     Processes messages through a pluggable middleware pipeline followed by
@@ -61,10 +61,10 @@ class AgnosticConsumer:
                 ``ExecutionMode.PROCESS`` tasks. ``None`` disables
                 process-pool execution.
             settings: Runtime tuning parameters. Defaults to
-                :class:`~agnosticq.models.ConsumerSettings` with default
+                :class:`~qanat.models.ConsumerSettings` with default
                 values if not provided.
             middlewares: Ordered list of
-                :class:`~agnosticq.middleware.Middleware` instances. Defaults
+                :class:`~qanat.middleware.Middleware` instances. Defaults
                 to ``[TtlMiddleware(), MaxRetriesMiddleware()]`` when ``None``.
                 Pass an empty list to disable all middleware.
         """
@@ -143,7 +143,7 @@ class AgnosticConsumer:
                 if self._pool is None:
                     raise RuntimeError(
                         "ProcessPoolExecutor not configured; "
-                        "set process_workers in AgnosticConsumer"
+                        "set process_workers in QanatConsumer"
                     )
                 loop = asyncio.get_running_loop()
                 fn = partial(handler, *args, **kwargs)

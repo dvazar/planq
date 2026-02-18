@@ -8,14 +8,14 @@ from typing import TYPE_CHECKING, Any, Final, override
 
 from aiobotocore.session import AioSession
 
-from agnosticq.base import BaseBroker
-from agnosticq.enums import Header
-from agnosticq.message import BrokerMessage
-from agnosticq.models import JsonRpcRequest, JsonRpcResponse
-from agnosticq.types import Headers
+from qanat.base import BaseBroker
+from qanat.enums import Header
+from qanat.message import BrokerMessage
+from qanat.models import JsonRpcRequest, JsonRpcResponse
+from qanat.types import Headers
 
 if TYPE_CHECKING:
-    from agnosticq.types import Seconds
+    from qanat.types import Seconds
 
 _SQS_MAX_BATCH_SIZE: Final = 10
 """Hard SQS limit on messages per ``receive_message`` call."""
@@ -39,7 +39,7 @@ class SqsBrokerMessage(BrokerMessage):
     Attributes:
         raw: Raw SQS message dict as returned by ``receive_message``.
         body: Parsed JSON-RPC request.
-        headers: Normalised agnosticq headers extracted from
+        headers: Normalised qanat headers extracted from
             ``MessageAttributes``.
     """
 
@@ -57,7 +57,7 @@ class SqsBrokerMessage(BrokerMessage):
             raw: Raw SQS message dict (includes ``ReceiptHandle``,
                 ``Attributes``, ``MessageAttributes``, etc.).
             body: Validated JSON-RPC request parsed from the message body.
-            headers: Normalised agnosticq headers.
+            headers: Normalised qanat headers.
             sqs_client: Active ``aiobotocore`` SQS client.
             queue_url: Full SQS queue URL used for all API calls.
         """
@@ -244,7 +244,7 @@ class SqsBroker(BaseBroker):
         Uses ``_SQS_WAIT_SECONDS`` by default and batch size
         ``min(prefetch, _SQS_MAX_BATCH_SIZE)`` (SQS maximum). Poison
         messages (unparseable bodies) are logged via
-        :meth:`~agnosticq.base.BaseBroker.on_poison_message` and then
+        :meth:`~qanat.base.BaseBroker.on_poison_message` and then
         deleted.
 
         Args:

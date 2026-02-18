@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from agnosticq.models import JsonRpcRequest
-    from agnosticq.types import Headers, JsonRpcId, Seconds
+    from qanat.models import JsonRpcRequest
+    from qanat.types import Headers, JsonRpcId, Seconds
 
 
 class BrokerMessage:
@@ -33,7 +33,7 @@ class BrokerMessage:
 
         Args:
             raw: Native message object from the broker SDK.
-            body: Validated :class:`~agnosticq.models.JsonRpcRequest`.
+            body: Validated :class:`~qanat.models.JsonRpcRequest`.
             headers: Flat string-to-string header mapping extracted
                 from broker-specific metadata.
         """
