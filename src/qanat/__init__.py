@@ -39,8 +39,13 @@ import logging
 
 from qanat.base import BaseBroker
 from qanat.consumer import QanatConsumer
+from qanat.context import TaskContext, current_task_ctx, get_task_context
 from qanat.enums import ExecutionMode, Header, JsonRpcError
-from qanat.exceptions import FeatureNotSupportedError
+from qanat.exceptions import (
+    FeatureNotSupportedError,
+    HandlerTimeout,
+    ProcessShutdown,
+)
 from qanat.message import BrokerMessage
 from qanat.middleware import (
     MaxRetriesMiddleware,
@@ -53,6 +58,7 @@ from qanat.models import (
     JsonRpcErrorDetail,
     JsonRpcRequest,
     JsonRpcResponse,
+    TaskRoute,
 )
 
 # Prevent "No handlers found" warning if user doesn't configure logging
@@ -65,6 +71,7 @@ __all__ = [
     "ConsumerSettings",
     "ExecutionMode",
     "FeatureNotSupportedError",
+    "HandlerTimeout",
     "Header",
     "JsonRpcError",
     "JsonRpcErrorDetail",
@@ -72,6 +79,11 @@ __all__ = [
     "JsonRpcResponse",
     "MaxRetriesMiddleware",
     "Middleware",
+    "ProcessShutdown",
     "SkipMessage",
+    "TaskContext",
+    "TaskRoute",
     "TtlMiddleware",
+    "current_task_ctx",
+    "get_task_context",
 ]

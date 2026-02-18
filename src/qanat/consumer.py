@@ -4,14 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import multiprocessing
+import os
 import signal
-from concurrent.futures import ProcessPoolExecutor
+import sys
+import threading
+import uuid
+from concurrent.futures import Future, ProcessPoolExecutor
 from functools import partial
 from random import uniform
 from typing import TYPE_CHECKING, Any, Callable
 
 from qanat.base import BaseBroker
+from qanat.context import get_task_context
 from qanat.enums import ExecutionMode, JsonRpcError
+from qanat.exceptions import (
+    FeatureNotSupportedError,
+    HandlerTimeout,
+    ProcessShutdown,
+)
 from qanat.middleware import (
     MaxRetriesMiddleware,
     SkipMessage,
@@ -21,6 +32,7 @@ from qanat.models import (
     ConsumerSettings,
     JsonRpcErrorDetail,
     JsonRpcResponse,
+    TaskRoute,
 )
 
 if TYPE_CHECKING:
@@ -29,6 +41,138 @@ if TYPE_CHECKING:
     from qanat.types import Seconds
 
 logger = logging.getLogger(__name__)
+
+
+def _sigalrm_handler(signum: int, frame: object) -> None:
+    raise HandlerTimeout()
+
+
+def _sigterm_handler(signum: int, frame: object) -> None:
+    raise ProcessShutdown()
+
+
+def _worker_main(
+    task_id: str,
+    monitoring_queue: Any,
+    fn: Callable[..., Any],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    signal.signal(signal.SIGALRM, _sigalrm_handler)
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+    monitoring_queue.put((task_id, os.getpid()))
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
+class _ProcessPool:
+    """Wraps ProcessPoolExecutor with PID tracking and signal-based kill.
+
+    Uses a single Manager().Queue() shared across all workers to collect
+    (task_id, pid) handshakes. A background thread maintains the
+    active_pids map and handles the KOS (Kill-On-Sight) race condition:
+    if kill_task() is called before the PID is registered, the task_id
+    is added to kos; when the PID arrives, the monitor kills it immediately.
+
+    Attributes:
+        _executor: Underlying ProcessPoolExecutor.
+        _active_pids: Mapping of live task_id → worker PID.
+        _kos: Set of task_ids to be killed immediately on PID registration.
+    """
+
+    def __init__(self, max_workers: int) -> None:
+        self._manager = multiprocessing.Manager()
+        self._monitoring_queue = self._manager.Queue()
+        self._executor = ProcessPoolExecutor(max_workers=max_workers)
+        self._active_pids: dict[str, int] = {}
+        self._kos: set[str] = set()
+        self._lock = threading.Lock()
+        self._monitor = threading.Thread(target=self._monitor_pids, daemon=True)
+        self._monitor.start()
+
+    def _monitor_pids(self) -> None:
+        while True:
+            try:
+                task_id, pid = self._monitoring_queue.get()
+                if task_id is None:  # poison pill → shutdown
+                    break
+                with self._lock:
+                    if task_id in self._kos:
+                        self._kos.discard(task_id)
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    else:
+                        self._active_pids[task_id] = pid
+            except Exception as exc:
+                logger.exception("_ProcessPool monitor error", exc_info=exc)
+
+    def submit(
+        self,
+        fn: Callable[..., Any],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> tuple[Future[Any], str]:
+        """Submit a callable for execution and return a (future, task_id) pair.
+
+        Args:
+            fn: Callable to execute in the worker process.
+            *args: Positional arguments forwarded to fn.
+            **kwargs: Keyword arguments forwarded to fn.
+
+        Returns:
+            A tuple of (Future, task_id) where task_id can be passed to
+            kill_task().
+        """
+        task_id = uuid.uuid4().hex
+        wrapped = partial(
+            _worker_main,
+            task_id,
+            self._monitoring_queue,
+            fn,
+            *args,
+            **kwargs,
+        )
+        future: Future[Any] = self._executor.submit(wrapped)
+        future.add_done_callback(lambda _: self._cleanup(task_id))
+        return future, task_id
+
+    def _cleanup(self, task_id: str) -> None:
+        with self._lock:
+            self._active_pids.pop(task_id, None)
+
+    def kill_task(self, task_id: str, sig: int = signal.SIGALRM) -> None:
+        """Send signal to worker running task_id, or add to KOS if not started.
+
+        Args:
+            task_id: ID returned by submit().
+            sig: Signal to send. SIGALRM for soft kill, SIGKILL for hard kill.
+        """
+        with self._lock:
+            pid = self._active_pids.get(task_id)
+            if pid is None:
+                self._kos.add(task_id)
+                return
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+
+    def shutdown(self, *, wait: bool = True) -> None:
+        """Shut down the pool, monitor thread, and manager.
+
+        Args:
+            wait: If True, block until all workers finish.
+        """
+        self._monitoring_queue.put((None, None))  # poison pill
+        self._executor.shutdown(wait=wait)
+        self._manager.shutdown()
 
 
 class QanatConsumer:
@@ -43,7 +187,7 @@ class QanatConsumer:
 
     Attributes:
         broker: The broker instance used to publish and consume messages.
-        routes: Mapping of method name to ``(handler, ExecutionMode)`` pair.
+        routes: Mapping of method name to :class:`~qanat.models.TaskRoute`.
     """
 
     def __init__(
@@ -69,9 +213,9 @@ class QanatConsumer:
                 Pass an empty list to disable all middleware.
         """
         self.broker = broker
-        self.routes: dict[str, tuple[Callable[..., Any], ExecutionMode]] = {}
-        self._pool: ProcessPoolExecutor | None = (
-            ProcessPoolExecutor(max_workers=process_workers)
+        self.routes: dict[str, TaskRoute] = {}
+        self._pool: _ProcessPool | None = (
+            _ProcessPool(max_workers=process_workers)
             if process_workers
             else None
         )
@@ -88,12 +232,16 @@ class QanatConsumer:
         self,
         name: str,
         mode: ExecutionMode = ExecutionMode.ASYNC,
+        *,
+        time_limit: float | None = None,
+        grace_period: float | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Register a callable as the handler for a named JSON-RPC method.
 
         Usage::
 
-            @consumer.task("my.method", mode=ExecutionMode.THREAD)
+            @consumer.task("my.method", mode=ExecutionMode.THREAD,
+                           time_limit=30.0)
             def handle(name: str, greeting: str = "Hi"):
                 ...
 
@@ -101,6 +249,12 @@ class QanatConsumer:
             name: JSON-RPC method name that routes to this handler.
             mode: Execution strategy for the handler. Defaults to
                 ``ExecutionMode.ASYNC``.
+            time_limit: Maximum wall-clock seconds the handler may run.
+                ``None`` means no limit. On expiry, raises
+                :exc:`~qanat.exceptions.HandlerTimeout`.
+            grace_period: Seconds between SIGALRM and SIGKILL for
+                ``ExecutionMode.PROCESS`` handlers. ``None`` defers to
+                :attr:`~qanat.models.ConsumerSettings.process_timeout_grace_period`.
 
         Returns:
             A decorator that registers the wrapped function and returns
@@ -108,7 +262,12 @@ class QanatConsumer:
         """
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-            self.routes[name] = (func, mode)
+            self.routes[name] = TaskRoute(
+                handler=func,
+                mode=mode,
+                time_limit=time_limit,
+                grace_period=grace_period,
+            )
             return func
 
         return decorator
@@ -121,12 +280,77 @@ class QanatConsumer:
             s.retry_max_delay,
         )
 
-    async def _execute(
+    async def _execute_async(
         self,
         handler: Callable[..., Any],
-        mode: ExecutionMode,
-        params: Any,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        time_limit: float | None,
     ) -> Any:
+        if time_limit is None:
+            return await handler(*args, **kwargs)
+        try:
+            async with asyncio.timeout(time_limit):
+                return await handler(*args, **kwargs)
+        except TimeoutError as e:
+            raise HandlerTimeout(time_limit) from e
+
+    async def _execute_thread(
+        self,
+        handler: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        time_limit: float | None,
+    ) -> Any:
+        if time_limit is None:
+            return await asyncio.to_thread(handler, *args, **kwargs)
+
+        ctx = get_task_context()
+        try:
+            async with asyncio.timeout(time_limit):
+                return await asyncio.to_thread(handler, *args, **kwargs)
+        except TimeoutError as e:
+            ctx.cancel()
+            raise HandlerTimeout(time_limit) from e
+
+    async def _execute_process(
+        self,
+        handler: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        time_limit: float | None,
+        grace_period: float | None,
+    ) -> Any:
+        if self._pool is None:
+            raise RuntimeError(
+                f"ProcessPoolExecutor not configured; "
+                f"set process_workers in {type(self).__name__}"
+            )
+
+        if sys.platform == "win32" and time_limit is not None:
+            raise FeatureNotSupportedError("process_time_limit", "Windows")
+
+        cf_future, task_id = self._pool.submit(handler, *args, **kwargs)
+        future = asyncio.wrap_future(cf_future)
+
+        if time_limit is None:
+            return await future
+
+        grace = (
+            grace_period
+            if grace_period is not None
+            else self._settings.process_timeout_grace_period
+        )
+        try:
+            async with asyncio.timeout(time_limit):
+                return await future
+        except TimeoutError as e:
+            self._pool.kill_task(task_id, signal.SIGALRM)
+            await asyncio.sleep(grace)
+            self._pool.kill_task(task_id, signal.SIGKILL)
+            raise HandlerTimeout(time_limit) from e
+
+    async def _execute(self, route: TaskRoute, params: Any) -> Any:
         args: tuple[Any, ...] = ()
         kwargs: dict[str, Any] = {}
         if isinstance(params, list):
@@ -134,20 +358,29 @@ class QanatConsumer:
         elif isinstance(params, dict):
             kwargs = params
 
-        match mode:
+        match route.mode:
             case ExecutionMode.ASYNC:
-                return await handler(*args, **kwargs)
+                return await self._execute_async(
+                    handler=route.handler,
+                    args=args,
+                    kwargs=kwargs,
+                    time_limit=route.time_limit,
+                )
             case ExecutionMode.THREAD:
-                return await asyncio.to_thread(handler, *args, **kwargs)
+                return await self._execute_thread(
+                    handler=route.handler,
+                    args=args,
+                    kwargs=kwargs,
+                    time_limit=route.time_limit,
+                )
             case ExecutionMode.PROCESS:
-                if self._pool is None:
-                    raise RuntimeError(
-                        "ProcessPoolExecutor not configured; "
-                        "set process_workers in QanatConsumer"
-                    )
-                loop = asyncio.get_running_loop()
-                fn = partial(handler, *args, **kwargs)
-                return await loop.run_in_executor(self._pool, fn)
+                return await self._execute_process(
+                    handler=route.handler,
+                    args=args,
+                    kwargs=kwargs,
+                    time_limit=route.time_limit,
+                    grace_period=route.grace_period,
+                )
 
     async def _process_message(self, msg: BrokerMessage) -> None:
         # 1. Run before_process_message middleware hooks
@@ -186,13 +419,11 @@ class QanatConsumer:
             await msg.nack(backoff)
             return
 
-        handler, mode = route
-
         # 3. Execute handler
         payload: Any = None
         handler_exc: Exception | None = None
         try:
-            payload = await self._execute(handler, mode, msg.body.params)
+            payload = await self._execute(route, msg.body.params)
         except Exception as exc:
             handler_exc = exc
 

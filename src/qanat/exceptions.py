@@ -25,6 +25,35 @@ class MethodNotFound(QanatError):
     """Raised when no registered handler exists for a given method name."""
 
 
+class HandlerTimeout(QanatError):
+    """Raised when a handler exceeds its configured time_limit.
+
+    Example: a handler registered with ``time_limit=30`` that runs for
+    more than 30 seconds.
+    """
+
+    def __init__(self, time_limit: float | None = None) -> None:
+        """Initialize with the exceeded time limit.
+
+        Args:
+            time_limit: The time limit in seconds that was exceeded.
+                If ``None``, a generic message is used.
+        """
+        if time_limit is not None:
+            msg = f"Handler exceeded time limit of {time_limit}s."
+        else:
+            msg = "Handler exceeded its time limit."
+        super().__init__(msg)
+        self.time_limit = time_limit
+
+
+class ProcessShutdown(QanatError):
+    """Raised inside a PROCESS-mode worker on SIGTERM during shutdown."""
+
+    def __init__(self) -> None:
+        super().__init__("Worker process is shutting down")
+
+
 class FeatureNotSupportedError(QanatError):
     """Raised when a feature is not supported by the broker provider.
 

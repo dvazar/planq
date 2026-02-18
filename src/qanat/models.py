@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from pydantic import BaseModel, ConfigDict
 
 if TYPE_CHECKING:
+    from qanat.enums import ExecutionMode
     from qanat.types import JsonRpcId, JsonRpcParams, JsonRpcVersion
 
 
@@ -29,6 +30,32 @@ class ConsumerSettings:
 
     # Max requeue attempts when no route matches the method name.
     unroutable_max_retries: int = 10
+
+    # Grace period (seconds) between SIGALRM and SIGKILL for timed-out workers.
+    process_timeout_grace_period: float = 5.0
+
+
+@dataclass(frozen=True, slots=True)
+class TaskRoute:
+    """Immutable route descriptor for a registered task handler.
+
+    Attributes:
+        handler: The callable registered for this method name.
+        mode: Execution strategy.
+        time_limit: Max wall-clock seconds the handler may run.
+            None means unlimited.
+        grace_period: Seconds after SIGALRM before SIGKILL in PROCESS mode.
+            None defers to ConsumerSettings.process_timeout_grace_period.
+    """
+
+    # The callable to invoke for this method name.
+    handler: Callable[..., Any]
+    # Execution strategy.
+    mode: ExecutionMode
+    # Maximum allowed execution time in seconds; None means unlimited.
+    time_limit: float | None = None
+    # Grace period override for PROCESS mode; None uses global setting.
+    grace_period: float | None = None
 
 
 class JsonRpcRequest(BaseModel):
