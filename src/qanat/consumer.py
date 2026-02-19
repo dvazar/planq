@@ -273,12 +273,13 @@ class QanatConsumer:
         return decorator
 
     def _calculate_backoff(self, delivery_count: int) -> Seconds:
+        # Full Jitter Backoff Strategy
         s = self._settings
-        return min(
-            s.retry_base_delay * 2 ** (delivery_count - 1)
-            + uniform(0, s.retry_jitter),
+        exponential_cap = min(
             s.retry_max_delay,
+            s.retry_base_delay * (2 ** (delivery_count - 1)),
         )
+        return uniform(0, exponential_cap)
 
     async def _execute_async(
         self,

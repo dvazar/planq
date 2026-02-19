@@ -25,9 +25,6 @@ class ConsumerSettings:
     # Maximum backoff delay in seconds; caps exponential growth.
     retry_max_delay: float = 300.0
 
-    # Upper bound for uniform jitter added to the backoff value.
-    retry_jitter: float = 1.0  # uniform(0, jitter)
-
     # Max requeue attempts when no route matches the method name.
     unroutable_max_retries: int = 10
 
