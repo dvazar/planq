@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Final, override
+from urllib.parse import urlparse
 
 from aiobotocore.session import AioSession
 
-from qanat.base import BaseBroker
+from qanat.broker import BaseBroker
 from qanat.enums import Header
 from qanat.message import BrokerMessage
 from qanat.models import JsonRpcRequest, JsonRpcResponse
@@ -140,6 +141,20 @@ class SqsBroker(BaseBroker):
         self._client: Any = None
         self._client_ctx: Any = None
 
+    def get_queue_name(self, identifier: str) -> str:
+        """Derive a queue name from an SQS URL or ARN."""
+        if not (identifier := identifier.strip()):
+            return ""
+
+        if identifier.lower().startswith("arn:"):
+            return identifier.split(":")[-1]
+
+        parsed = urlparse(identifier)
+        if parsed.scheme:
+            return parsed.path.rstrip("/").split("/")[-1]
+
+        return identifier
+
     @override
     async def connect(self) -> None:
         """Create an ``aiobotocore`` SQS client and enter its context."""
@@ -262,18 +277,18 @@ class SqsBroker(BaseBroker):
             for raw_msg in resp.get("Messages", ()):
                 try:
                     body = JsonRpcRequest.model_validate_json(raw_msg["Body"])
-                except Exception as exc:
+                except Exception as e:
                     try:
-                        await self.on_poison_message(raw_msg["Body"], exc)
+                        await self.on_poison_message(raw_msg["Body"], queue, e)
                         await self._client.delete_message(
                             QueueUrl=queue,
                             ReceiptHandle=raw_msg["ReceiptHandle"],
                         )
-                    except Exception as e:
+                    except Exception as exc:
                         logger.exception(
                             "Failed to handle poison message %s",
                             raw_msg.get("MessageId", "unknown"),
-                            exc_info=e,
+                            exc_info=exc,
                         )
                     continue
 

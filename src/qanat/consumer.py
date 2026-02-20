@@ -15,7 +15,6 @@ from functools import partial
 from random import uniform
 from typing import TYPE_CHECKING, Any, Callable, Final
 
-from qanat.base import BaseBroker
 from qanat.context import get_task_context
 from qanat.enums import ExecutionMode, JsonRpcError
 from qanat.exceptions import (
@@ -35,6 +34,7 @@ from qanat.models import (
 )
 
 if TYPE_CHECKING:
+    from qanat.broker import BaseBroker
     from qanat.message import BrokerMessage
     from qanat.middleware import Middleware
     from qanat.types import Seconds

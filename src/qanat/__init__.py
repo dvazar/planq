@@ -36,7 +36,7 @@ Middleware:
 
 import logging
 
-from qanat.base import BaseBroker
+from qanat.broker import BaseBroker
 from qanat.consumer import QanatConsumer
 from qanat.context import TaskContext, current_task_ctx, get_task_context
 from qanat.enums import ExecutionMode, Header, JsonRpcError

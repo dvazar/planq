@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from qanat.message import BrokerMessage
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_MAX_POISON_BODY_LOG = 500
+MAX_LOG_PAYLOAD_SIZE: Final[int] = 1000
 
 
 class BaseBroker:
@@ -34,6 +34,20 @@ class BaseBroker:
             dsn: Transport-specific connection string or endpoint URL
         """
         self.dsn = dsn
+
+    def get_queue_name(self, identifier: str) -> str:
+        """Derive a queue name from an identifier.
+
+        By default, returns the identifier unchanged. Override to apply
+        provider-specific naming rules or transformations.
+
+        Args:
+            identifier: URL, ARN, logical name or identifier for the queue.
+
+        Returns:
+            The derived queue name to use for publishing or consuming.
+        """
+        return identifier.strip()
 
     async def connect(self) -> None:
         """Open the underlying transport connection.
@@ -120,7 +134,8 @@ class BaseBroker:
 
     async def on_poison_message(
         self,
-        raw_body: str,
+        raw_body: str | bytes,
+        queue: str,
         error: Exception,
     ) -> None:
         """Handle a message that failed JSON-RPC parsing.
@@ -131,16 +146,29 @@ class BaseBroker:
 
         Args:
             raw_body: The raw string body of the unprocessable message.
+            queue: The queue from which the message was consumed.
             error: The exception raised during parsing.
         """
-        truncated = (
-            raw_body[:_MAX_POISON_BODY_LOG] + "..."
-            if len(raw_body) > _MAX_POISON_BODY_LOG
-            else raw_body
-        )
+        body_size = len(raw_body)
+        is_truncated = body_size > MAX_LOG_PAYLOAD_SIZE
+
+        safe_body = raw_body[:MAX_LOG_PAYLOAD_SIZE]
+        if isinstance(safe_body, bytes):
+            safe_body = safe_body.decode("utf-8", errors="replace")
+        if is_truncated:
+            safe_body += f"... [truncated, total size: {body_size} bytes]"
+
+        ctx = {
+            "queue_name": self.get_queue_name(queue),
+            "body_size": body_size,
+            "is_truncated": is_truncated,
+            "raw_body_snippet": safe_body,
+        }
         logger.error(
-            "Poison message discarded, body: %s",
-            truncated,
+            'Poison message detected in queue "%(queue_name)s": '
+            "failed to parse body",
+            ctx,
+            extra=ctx,
             exc_info=error,
         )
 
