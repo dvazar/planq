@@ -2,42 +2,91 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
 from typing import TYPE_CHECKING, Any, Callable
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 if TYPE_CHECKING:
     from qanat.enums import ExecutionMode
     from qanat.types import JsonRpcId, JsonRpcParams, JsonRpcVersion
 
 
-@dataclass(frozen=True, slots=True)
-class ConsumerSettings:
+class ConsumerSettings(BaseModel):
     """Immutable runtime settings for ``QanatConsumer``."""
 
+    model_config = ConfigDict(frozen=True, strict=True)
+
     # Maximum number of messages processed concurrently.
+    # Must be > 0.
     concurrency: int = 10
 
-    # Max retries for routes without explicit max_retries.
+    # Maximum retries for routes without explicit max_retries.
     # None defers to DEFAULT_MAX_RETRIES.
+    # Zero means one attempt (initial delivery only, no retries).
     max_retries: int | None = None
 
-    # Max requeue attempts when no route matches the method name.
+    # Maximum requeue attempts when no route matches the method name.
+    # Zero means reject immediately on first unroutable message.
     unroutable_max_retries: int = 10
 
     # Initial backoff delay in seconds; doubles with each retry attempt.
+    # Must be > 0.
     retry_base_delay: float = 1.0
 
     # Maximum backoff delay in seconds; caps exponential growth.
+    # Must be > 0.
     retry_max_delay: float = 300.0
 
     # Grace period (seconds) between SIGALRM and SIGKILL for timed-out workers.
+    # Must be > 0.
     process_timeout_grace_period: float = 5.0
 
+    @field_validator("concurrency")
+    @classmethod
+    def validate_concurrency(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("concurrency must be positive")
+        return v
 
-@dataclass(frozen=True, slots=True)
-class TaskRoute:
+    @field_validator("max_retries")
+    @classmethod
+    def validate_max_retries(cls, v: int | None) -> int | None:
+        if v is not None and v < 0:
+            raise ValueError(
+                "max_retries must be non-negative "
+                "(0 = one attempt with no retries, "
+                "None = use DEFAULT_MAX_RETRIES)"
+            )
+        return v
+
+    @field_validator("unroutable_max_retries")
+    @classmethod
+    def validate_unroutable_max_retries(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(
+                "unroutable_max_retries must be non-negative "
+                "(0 = reject immediately on unroutable message)"
+            )
+        return v
+
+    @field_validator(
+        "retry_base_delay",
+        "retry_max_delay",
+        "process_timeout_grace_period",
+    )
+    @classmethod
+    def validate_positive_float(cls, v: float, info) -> float:
+        if math.isnan(v):
+            raise ValueError(f"{info.field_name} cannot be NaN")
+        if math.isinf(v):
+            raise ValueError(f"{info.field_name} cannot be infinite")
+        if v <= 0:
+            raise ValueError(f"{info.field_name} must be positive")
+        return v
+
+
+class TaskRoute(BaseModel):
     """Immutable route descriptor for a registered task handler.
 
     Attributes:
@@ -49,21 +98,57 @@ class TaskRoute:
             None defers to ConsumerSettings.process_timeout_grace_period.
     """
 
+    model_config = ConfigDict(
+        frozen=True, arbitrary_types_allowed=True, strict=True
+    )
+
     # The callable to invoke for this method name.
     handler: Callable[..., Any]
 
     # Execution strategy.
     mode: ExecutionMode
 
-    # Maximum delivery attempts.
-    # None defers to ConsumerSettings or DEFAULT_MAX_RETRIES.
+    # Maximum delivery attempts for this handler.
+    # None defers to ConsumerSettings.max_retries or DEFAULT_MAX_RETRIES.
+    # Zero means one attempt (initial delivery only, no retries).
     max_retries: int | None = None
 
-    # Maximum allowed execution time in seconds; None means unlimited.
+    # Maximum allowed execution time in seconds.
+    # None means unlimited.
     time_limit: float | None = None
 
-    # Grace period override for PROCESS mode; None uses global setting.
+    # Grace period override for PROCESS mode timeout handling.
+    # None uses ConsumerSettings.process_timeout_grace_period.
     grace_period: float | None = None
+
+    @field_validator("max_retries")
+    @classmethod
+    def validate_max_retries(cls, v: int | None) -> int | None:
+        if v is not None and v < 0:
+            raise ValueError(
+                "max_retries must be non-negative "
+                "(0 = one attempt with no retries, None = use consumer default)"
+            )
+        return v
+
+    @field_validator("time_limit", "grace_period")
+    @classmethod
+    def validate_positive_optional_float(
+        cls, v: float | None, info
+    ) -> float | None:
+        if v is not None:
+            if math.isnan(v):
+                raise ValueError(f"{info.field_name} cannot be NaN")
+            if math.isinf(v):
+                raise ValueError(
+                    f"{info.field_name} cannot be infinite "
+                    "(use None for unlimited)"
+                )
+            if v <= 0:
+                raise ValueError(
+                    f"{info.field_name} must be positive when specified"
+                )
+        return v
 
 
 class JsonRpcRequest(BaseModel):

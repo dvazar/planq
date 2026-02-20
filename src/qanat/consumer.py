@@ -249,7 +249,9 @@ class QanatConsumer:
             name: JSON-RPC method name that routes to this handler.
             mode: Execution strategy for the handler. Defaults to
                 ``ExecutionMode.ASYNC``.
-            max_retries: Maximum delivery attempts for this handler.
+            max_retries: Maximum number of retry attempts for this handler.
+                Must be non-negative. Zero means no retries (a single attempt
+                only), useful for idempotent operations that should fail fast.
                 ``None`` defers to
                 :attr:`~qanat.models.ConsumerSettings.max_retries`
                 or ``DEFAULT_MAX_RETRIES`` (3).
@@ -263,6 +265,10 @@ class QanatConsumer:
         Returns:
             A decorator that registers the wrapped function and returns
             it unchanged.
+
+        Raises:
+            pydantic.ValidationError: If max_retries is negative, or
+                time_limit/grace_period are non-positive.
         """
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
