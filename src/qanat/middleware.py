@@ -163,32 +163,3 @@ class TtlMiddleware(Middleware):
         if expire_at is not None and time.time() > float(expire_at):
             await msg.reject()
             raise SkipMessage()
-
-
-class MaxRetriesMiddleware(Middleware):
-    """Rejects messages that have exceeded the maximum delivery count.
-
-    Reads the ``x-max-retries`` header and compares it against
-    ``msg.delivery_count``. If the delivery count exceeds ``max_retries``
-    the message is rejected and :class:`SkipMessage` is raised.
-    """
-
-    async def before_process_message(
-        self,
-        consumer: QanatConsumer,
-        msg: BrokerMessage,
-    ) -> None:
-        """Reject the message if it has exceeded max retries.
-
-        Args:
-            consumer: The consumer instance (unused).
-            msg: The incoming message to inspect.
-
-        Raises:
-            SkipMessage: After calling ``msg.reject()`` when
-                ``delivery_count > max_retries``.
-        """
-        max_retries = msg.headers.get(Header.MAX_RETRIES)
-        if max_retries is not None and msg.delivery_count > int(max_retries):
-            await msg.reject()
-            raise SkipMessage()

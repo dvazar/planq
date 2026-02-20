@@ -61,7 +61,6 @@ class BaseBroker:
         rpc: JsonRpcRequest | JsonRpcResponse,
         *,
         delay: Seconds | None = None,
-        max_retries: int | None = None,
         expire_at: float | None = None,
         reply_to: str | None = None,
         headers: Headers | None = None,
@@ -77,8 +76,6 @@ class BaseBroker:
                 immediate delivery. Providers without native scheduled-delivery
                 support raise
                 :exc:`~qanat.exceptions.FeatureNotSupportedError`.
-            max_retries: Maximum delivery attempts before the message is
-                permanently rejected. Stored as a broker header.
             expire_at: Unix timestamp after which the message should be
                 discarded. Stored as a broker header.
             reply_to: Optional queue name where the consumer should send
@@ -86,7 +83,7 @@ class BaseBroker:
             headers: Optional mapping of additional user-defined headers to
                 attach to the message. Values are always stored as strings.
                 Do not shadow reserved keys used by the framework
-                (``ReplyTo``, ``MaxRetries``, ``ExpireAt``).
+                (``ReplyTo``, ``ExpireAt``).
 
         Returns:
             The provider-assigned message identifier string.

@@ -75,6 +75,14 @@ class SqsBrokerMessage(BrokerMessage):
         """
         return int(self.raw["Attributes"]["ApproximateReceiveCount"])
 
+    @property
+    @override
+    def reply_to(self) -> str | None:
+        """Queue URL from the ``ReplyTo`` message attribute, or ``None``."""
+        if attr := self.raw.get("MessageAttributes", {}).get("ReplyTo"):
+            return attr["StringValue"] or None
+        return None
+
     @override
     async def ack(self) -> None:
         """Delete the message from SQS to signal successful processing."""
@@ -90,14 +98,6 @@ class SqsBrokerMessage(BrokerMessage):
             QueueUrl=self._queue_url,
             ReceiptHandle=self._receipt_handle,
         )
-
-    @property
-    @override
-    def reply_to(self) -> str | None:
-        """Queue URL from the ``ReplyTo`` message attribute, or ``None``."""
-        if attr := self.raw.get("MessageAttributes", {}).get("ReplyTo"):
-            return attr["StringValue"] or None
-        return None
 
     @override
     async def nack(self, delay: Seconds) -> None:
@@ -165,7 +165,6 @@ class SqsBroker(BaseBroker):
         rpc: JsonRpcRequest | JsonRpcResponse,
         *,
         delay: Seconds | None = None,
-        max_retries: int | None = None,
         expire_at: float | None = None,
         reply_to: str | None = None,
         headers: Headers | None = None,
@@ -178,7 +177,7 @@ class SqsBroker(BaseBroker):
         ``DataType=String``.
 
         Reserved attribute names that must not appear in ``headers``:
-        ``ReplyTo``, ``MaxRetries``, ``ExpireAt``.
+        ``ReplyTo``, ``ExpireAt``.
 
         Args:
             queue: Destination SQS queue URL.
@@ -187,8 +186,6 @@ class SqsBroker(BaseBroker):
                 0–``_SQS_MAX_DELAY_SECONDS`` (15 min). Values outside this
                 range are rejected by SQS directly. ``None`` means immediate
                 delivery.
-            max_retries: Maximum delivery attempts stored as
-                ``MaxRetries`` attribute.
             expire_at: Unix timestamp stored as ``ExpireAt`` attribute.
             reply_to: Optional queue URL for the consumer's response.
             headers: Optional user-defined headers to attach as SQS
@@ -204,11 +201,6 @@ class SqsBroker(BaseBroker):
             attrs["ReplyTo"] = {
                 "DataType": "String",
                 "StringValue": reply_to,
-            }
-        if max_retries is not None:
-            attrs["MaxRetries"] = {
-                "DataType": "Number",
-                "StringValue": str(max_retries),
             }
         if expire_at is not None:
             attrs["ExpireAt"] = {
@@ -287,12 +279,6 @@ class SqsBroker(BaseBroker):
 
                 headers: Headers = {}
                 msg_attrs = raw_msg.get("MessageAttributes", {})
-
-                max_retries_attr = msg_attrs.get("MaxRetries")
-                if max_retries_attr is not None:
-                    headers[Header.MAX_RETRIES] = max_retries_attr[
-                        "StringValue"
-                    ]
 
                 expire_at_attr = msg_attrs.get("ExpireAt")
                 if expire_at_attr is not None:

@@ -13,7 +13,7 @@ import uuid
 from concurrent.futures import Future, ProcessPoolExecutor
 from functools import partial
 from random import uniform
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Final
 
 from qanat.base import BaseBroker
 from qanat.context import get_task_context
@@ -24,7 +24,6 @@ from qanat.exceptions import (
     ProcessShutdown,
 )
 from qanat.middleware import (
-    MaxRetriesMiddleware,
     SkipMessage,
     TtlMiddleware,
 )
@@ -41,6 +40,8 @@ if TYPE_CHECKING:
     from qanat.types import Seconds
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MAX_RETRIES: Final[int] = 3
 
 
 def _sigalrm_handler(signum: int, frame: object) -> None:
@@ -209,7 +210,7 @@ class QanatConsumer:
                 values if not provided.
             middlewares: Ordered list of
                 :class:`~qanat.middleware.Middleware` instances. Defaults
-                to ``[TtlMiddleware(), MaxRetriesMiddleware()]`` when ``None``.
+                to ``[TtlMiddleware()]`` when ``None``.
                 Pass an empty list to disable all middleware.
         """
         self.broker = broker
@@ -223,9 +224,7 @@ class QanatConsumer:
             settings if settings is not None else ConsumerSettings()
         )
         self._middlewares: list[Middleware] = (
-            middlewares
-            if middlewares is not None
-            else [TtlMiddleware(), MaxRetriesMiddleware()]
+            middlewares if middlewares is not None else [TtlMiddleware()]
         )
 
     def task(
@@ -233,6 +232,7 @@ class QanatConsumer:
         name: str,
         mode: ExecutionMode = ExecutionMode.ASYNC,
         *,
+        max_retries: int | None = None,
         time_limit: float | None = None,
         grace_period: float | None = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
@@ -249,6 +249,10 @@ class QanatConsumer:
             name: JSON-RPC method name that routes to this handler.
             mode: Execution strategy for the handler. Defaults to
                 ``ExecutionMode.ASYNC``.
+            max_retries: Maximum delivery attempts for this handler.
+                ``None`` defers to
+                :attr:`~qanat.models.ConsumerSettings.max_retries`
+                or ``DEFAULT_MAX_RETRIES`` (3).
             time_limit: Maximum wall-clock seconds the handler may run.
                 ``None`` means no limit. On expiry, raises
                 :exc:`~qanat.exceptions.HandlerTimeout`.
@@ -265,12 +269,15 @@ class QanatConsumer:
             self.routes[name] = TaskRoute(
                 handler=func,
                 mode=mode,
+                max_retries=max_retries,
                 time_limit=time_limit,
                 grace_period=grace_period,
             )
             return func
 
         return decorator
+
+    handler = task
 
     def _calculate_backoff(self, delivery_count: int) -> Seconds:
         # Full Jitter Backoff Strategy
@@ -280,6 +287,21 @@ class QanatConsumer:
             s.retry_base_delay * (2 ** (delivery_count - 1)),
         )
         return uniform(0, exponential_cap)
+
+    def _get_max_retries(self, route: TaskRoute) -> int:
+        """Determine max retries using priority: route → settings → default.
+
+        Args:
+            route: The route being executed.
+
+        Returns:
+            The effective max retries value to use.
+        """
+        if route.max_retries is not None:
+            return route.max_retries
+        if self._settings.max_retries is not None:
+            return self._settings.max_retries
+        return DEFAULT_MAX_RETRIES
 
     async def _execute_async(
         self,
@@ -383,6 +405,65 @@ class QanatConsumer:
                     grace_period=route.grace_period,
                 )
 
+    def _log_retry_warning(
+        self,
+        msg: BrokerMessage,
+        exc: Exception,
+        backoff: float,
+        total_attempts: int,
+    ):
+        ctx = {
+            "method": msg.body.method,
+            "correlation_id": msg.correlation_id,
+            "attempt": msg.delivery_count,
+            "total_attempts": total_attempts,
+            "delay_seconds": backoff,
+            "error_type": type(exc).__name__,
+            "error_msg": str(exc),
+        }
+        logger.warning(
+            'Task "%(method)s" (id: %(correlation_id)s) failed. '
+            "Attempt %(attempt)d/%(total_attempts)d. "
+            "Retrying in %(delay_seconds).1fs. "
+            "Reason: %(error_type)s(%(error_msg)r)",
+            ctx,
+            extra=ctx,
+        )
+
+    def _log_retry_exhausted_error(
+        self,
+        msg: BrokerMessage,
+        exc: Exception,
+        total_attempts: int,
+    ):
+        ctx = {
+            "method": msg.body.method,
+            "correlation_id": msg.correlation_id,
+            "attempt": msg.delivery_count,
+            "total_attempts": total_attempts,
+            "error_type": type(exc).__name__,
+            "error_msg": str(exc),
+        }
+        logger.error(
+            'Task "%(method)s" (id: %(correlation_id)s) permanently failed '
+            "after %(total_attempts)d attempts",
+            ctx,
+            extra=ctx,
+            exc_info=True,
+        )
+
+    def _log_acking_without_reply_info(self, msg: BrokerMessage):
+        ctx = {
+            "method": msg.body.method,
+            "correlation_id": msg.correlation_id,
+        }
+        logger.info(
+            'Task "%(method)s" (id: %(correlation_id)s) has id '
+            "but no reply_to, acking without reply",
+            ctx,
+            extra=ctx,
+        )
+
     async def _process_message(self, msg: BrokerMessage) -> None:
         # 1. Run before_process_message middleware hooks
         try:
@@ -403,14 +484,23 @@ class QanatConsumer:
         # 2. Route
         route = self.routes.get(msg.body.method)
         if route is None:
-            if msg.delivery_count > self._settings.unroutable_max_retries:
+            unroutable_max_retries = self._settings.unroutable_max_retries
+            if msg.delivery_count >= unroutable_max_retries:
+                ctx = {
+                    "method": msg.body.method,
+                    "correlation_id": msg.correlation_id,
+                    "attempt": msg.delivery_count,
+                    "unroutable_max_retries": unroutable_max_retries,
+                }
                 logger.error(
-                    "No route for method %s after %d attempts, rejecting",
-                    msg.body.method,
-                    msg.delivery_count,
+                    'No route for method "%(method)s" (id: %(correlation_id)s) '
+                    "after %(unroutable_max_retries)d attempts, rejecting",
+                    ctx,
+                    extra=ctx,
                 )
                 await msg.reject()
                 return
+
             backoff = self._calculate_backoff(msg.delivery_count)
             logger.warning(
                 "No route for method: %s, nacking with %.1fs delay",
@@ -447,28 +537,44 @@ class QanatConsumer:
         # 5. Notification flow (no id → fire-and-forget)
         if msg.correlation_id is None:
             if handler_exc is not None:
+                total_attempts = self._get_max_retries(route) + 1
+
+                if msg.delivery_count >= total_attempts:
+                    self._log_retry_exhausted_error(
+                        msg, handler_exc, total_attempts
+                    )
+                    await msg.reject()
+                    return
+
                 backoff = self._calculate_backoff(msg.delivery_count)
-                logger.error(
-                    "Handler %s failed, nacking with %.1fs delay",
-                    msg.body.method,
-                    backoff,
-                    exc_info=handler_exc,
+                self._log_retry_warning(
+                    msg, handler_exc, backoff, total_attempts
                 )
                 await msg.nack(backoff)
                 return
+
             await msg.ack()
             return
 
         # 6. Request flow (has id → send response to reply_to)
-        if msg.reply_to is None:
-            logger.warning(
-                "Request %s has id but no reply_to, acking without reply",
-                msg.body.method,
-            )
-            await msg.ack()
-            return
-
         if handler_exc is not None:
+            total_attempts = self._get_max_retries(route) + 1
+
+            if msg.delivery_count < total_attempts:
+                backoff = self._calculate_backoff(msg.delivery_count)
+                self._log_retry_warning(
+                    msg, handler_exc, backoff, total_attempts
+                )
+                await msg.nack(backoff)
+                return
+
+            self._log_retry_exhausted_error(msg, handler_exc, total_attempts)
+
+            if not msg.reply_to:
+                self._log_acking_without_reply_info(msg)
+                await msg.ack()
+                return
+
             response = JsonRpcResponse(
                 id=msg.correlation_id,
                 error=JsonRpcErrorDetail(
@@ -477,6 +583,11 @@ class QanatConsumer:
                 ),
             )
         else:
+            if not msg.reply_to:
+                self._log_acking_without_reply_info(msg)
+                await msg.ack()
+                return
+
             response = JsonRpcResponse(id=msg.correlation_id, result=payload)
 
         # 7. Run before_publish_response middleware hooks
@@ -496,6 +607,7 @@ class QanatConsumer:
                     exc_info=exc,
                 )
 
+        # 8. Publish response
         try:
             await self.broker.publish(
                 msg.reply_to,

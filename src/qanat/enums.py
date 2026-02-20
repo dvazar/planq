@@ -26,9 +26,6 @@ class ExecutionMode(StrEnum):
 class Header(StrEnum):
     """Broker-level message headers."""
 
-    MAX_RETRIES = "x-max-retries"
-    """Maximum delivery attempts before the message is rejected."""
-
     EXPIRE_AT = "x-expire-at"
     """Unix timestamp (float) after which the message is considered expired."""
 

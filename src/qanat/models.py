@@ -19,14 +19,18 @@ class ConsumerSettings:
     # Maximum number of messages processed concurrently.
     concurrency: int = 10
 
+    # Max retries for routes without explicit max_retries.
+    # None defers to DEFAULT_MAX_RETRIES.
+    max_retries: int | None = None
+
+    # Max requeue attempts when no route matches the method name.
+    unroutable_max_retries: int = 10
+
     # Initial backoff delay in seconds; doubles with each retry attempt.
     retry_base_delay: float = 1.0
 
     # Maximum backoff delay in seconds; caps exponential growth.
     retry_max_delay: float = 300.0
-
-    # Max requeue attempts when no route matches the method name.
-    unroutable_max_retries: int = 10
 
     # Grace period (seconds) between SIGALRM and SIGKILL for timed-out workers.
     process_timeout_grace_period: float = 5.0
@@ -47,10 +51,17 @@ class TaskRoute:
 
     # The callable to invoke for this method name.
     handler: Callable[..., Any]
+
     # Execution strategy.
     mode: ExecutionMode
+
+    # Maximum delivery attempts.
+    # None defers to ConsumerSettings or DEFAULT_MAX_RETRIES.
+    max_retries: int | None = None
+
     # Maximum allowed execution time in seconds; None means unlimited.
     time_limit: float | None = None
+
     # Grace period override for PROCESS mode; None uses global setting.
     grace_period: float | None = None
 

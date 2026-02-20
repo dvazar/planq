@@ -32,7 +32,6 @@ Middleware:
 - :class:`~qanat.middleware.Middleware` — base class for lifecycle hooks.
 - :class:`~qanat.middleware.SkipMessage` — abort message processing.
 - :class:`~qanat.middleware.TtlMiddleware` — built-in TTL enforcement.
-- :class:`~qanat.middleware.MaxRetriesMiddleware` — built-in retry cap.
 """
 
 import logging
@@ -48,7 +47,6 @@ from qanat.exceptions import (
 )
 from qanat.message import BrokerMessage
 from qanat.middleware import (
-    MaxRetriesMiddleware,
     Middleware,
     SkipMessage,
     TtlMiddleware,
@@ -77,7 +75,6 @@ __all__ = [
     "JsonRpcErrorDetail",
     "JsonRpcRequest",
     "JsonRpcResponse",
-    "MaxRetriesMiddleware",
     "Middleware",
     "ProcessShutdown",
     "SkipMessage",

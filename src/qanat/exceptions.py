@@ -13,14 +13,6 @@ class MessageExpired(QanatError):
     """
 
 
-class MaxRetriesExceeded(QanatError):
-    """Raised when a message has exhausted its retry budget.
-
-    The consumer rejects the message permanently when
-    ``delivery_count > x-max-retries``.
-    """
-
-
 class MethodNotFound(QanatError):
     """Raised when no registered handler exists for a given method name."""
 
