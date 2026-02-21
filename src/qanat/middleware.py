@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -11,7 +12,9 @@ if TYPE_CHECKING:
     from qanat.consumer import QanatConsumer
     from qanat.message import BrokerMessage
     from qanat.models import JsonRpcResponse
-    from qanat.types import Headers
+    from qanat.types import Headers, Seconds
+
+logger = logging.getLogger(__name__)
 
 
 class SkipMessage(Exception):
@@ -136,20 +139,53 @@ class Middleware:
         """
 
 
-class TtlMiddleware(Middleware):
-    """Rejects messages whose TTL has expired before processing begins.
+class DeadlineMiddleware(Middleware):
+    """Rejects messages whose deadline has expired before processing begins.
 
     Reads the ``x-expire-at`` header (Unix timestamp). If the current time
-    exceeds that value the message is rejected and :class:`SkipMessage` is
-    raised, preventing handler execution.
+    exceeds that value (plus optional clock drift tolerance), the message is
+    rejected and :class:`SkipMessage` is raised, preventing handler execution.
+
+    The ``leeway`` parameter provides tolerance for clock drift between
+    publisher and consumer nodes. For example, with ``leeway=2.0``, a message
+    with ``expire_at=12:00:10`` would be accepted at consumer time ``12:00:11``
+    (1 second past deadline, but within 2-second tolerance).
+
+    Attributes:
+        leeway: Clock drift tolerance in seconds. Messages are rejected only
+            if ``time.time() > expire_at + leeway``. Defaults to 0.0 (strict
+            deadline enforcement).
     """
+
+    def __init__(self, leeway: Seconds = 0.0):
+        """Initialize DeadlineMiddleware with clock drift tolerance.
+
+        Args:
+            leeway: Clock drift tolerance in seconds (non-negative). Allows
+                messages slightly past their deadline to be processed if
+                within tolerance. Defaults to 0.0 (no tolerance).
+
+        Raises:
+            ValueError: If leeway is negative.
+        """
+        if leeway < 0:
+            raise ValueError("leeway must be non-negative")
+
+        if leeway > 60:
+            logger.warning(
+                f"{type(self).__name__} configured with leeway=%.1fs (>60s). "
+                "This is unusually large and may indicate misconfiguration.",
+                leeway,
+            )
+
+        self.leeway = leeway
 
     async def before_process_message(
         self,
         consumer: QanatConsumer,
         msg: BrokerMessage,
     ) -> None:
-        """Reject the message if its TTL has expired.
+        """Reject the message if its deadline has expired.
 
         Args:
             consumer: The consumer instance (unused).
@@ -157,9 +193,12 @@ class TtlMiddleware(Middleware):
 
         Raises:
             SkipMessage: After calling ``msg.reject()`` when the message
-                TTL has expired.
+                deadline has expired (accounting for configured leeway).
         """
         expire_at = msg.headers.get(Header.EXPIRE_AT)
-        if expire_at is not None and time.time() > float(expire_at):
+        if (
+            expire_at is not None
+            and time.time() > float(expire_at) + self.leeway
+        ):
             await msg.reject()
             raise SkipMessage()

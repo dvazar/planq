@@ -23,8 +23,8 @@ from qanat.exceptions import (
     ProcessShutdown,
 )
 from qanat.middleware import (
+    DeadlineMiddleware,
     SkipMessage,
-    TtlMiddleware,
 )
 from qanat.models import (
     ConsumerSettings,
@@ -210,7 +210,7 @@ class QanatConsumer:
                 values if not provided.
             middlewares: Ordered list of
                 :class:`~qanat.middleware.Middleware` instances. Defaults
-                to ``[TtlMiddleware()]`` when ``None``.
+                to ``[DeadlineMiddleware()]`` when ``None``.
                 Pass an empty list to disable all middleware.
         """
         self.broker = broker
@@ -224,7 +224,7 @@ class QanatConsumer:
             settings if settings is not None else ConsumerSettings()
         )
         self._middlewares: list[Middleware] = (
-            middlewares if middlewares is not None else [TtlMiddleware()]
+            middlewares if middlewares is not None else [DeadlineMiddleware()]
         )
 
     def task(

@@ -31,7 +31,8 @@ Middleware:
 
 - :class:`~qanat.middleware.Middleware` — base class for lifecycle hooks.
 - :class:`~qanat.middleware.SkipMessage` — abort message processing.
-- :class:`~qanat.middleware.TtlMiddleware` — built-in TTL enforcement.
+- :class:`~qanat.middleware.DeadlineMiddleware` — built-in deadline enforcement
+         with clock drift tolerance.
 """
 
 import logging
@@ -47,9 +48,9 @@ from qanat.exceptions import (
 )
 from qanat.message import BrokerMessage
 from qanat.middleware import (
+    DeadlineMiddleware,
     Middleware,
     SkipMessage,
-    TtlMiddleware,
 )
 from qanat.models import (
     ConsumerSettings,
@@ -80,7 +81,7 @@ __all__ = [
     "SkipMessage",
     "TaskContext",
     "TaskRoute",
-    "TtlMiddleware",
+    "DeadlineMiddleware",
     "current_task_ctx",
     "get_task_context",
 ]
