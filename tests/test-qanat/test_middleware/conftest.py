@@ -8,7 +8,6 @@ import pytest
 from hypothesis import strategies as st
 
 from qanat import types as qanat_types
-from qanat.consumer import QanatConsumer
 from qanat.message import BrokerMessage
 from qanat.middleware import Middleware
 from qanat.models import JsonRpcRequest, JsonRpcResponse
@@ -19,12 +18,6 @@ JsonRpcResponse.model_rebuild(_types_namespace=qanat_types.__dict__)
 
 
 # === Mock Fixtures ===
-
-
-@pytest.fixture
-def mock_consumer():
-    """Mock QanatConsumer instance."""
-    return MagicMock(spec=QanatConsumer)
 
 
 @pytest.fixture
@@ -65,78 +58,44 @@ def mock_broker_message_with_ttl(mock_broker_message):
 
 
 @pytest.fixture
-def concrete_middleware():
-    """Concrete Middleware subclass for testing hooks."""
+def mock_call_next():
+    """AsyncMock for call_next returning None."""
+    return AsyncMock(return_value=None)
 
-    class TestMiddleware(Middleware):
-        """Test implementation that tracks hook calls."""
+
+@pytest.fixture
+def tracking_middleware():
+    """Middleware that wraps call_next and records calls."""
+
+    class TrackingMiddleware(Middleware):
+        """Test implementation that tracks __call__ invocations."""
 
         def __init__(self):
-            """Initialize tracking flags."""
-            self.before_process_called = False
-            self.after_process_called = False
-            self.after_skip_called = False
-            self.before_publish_called = False
-            self.last_consumer = None
+            self.call_count = 0
             self.last_msg = None
-            self.last_result = None
-            self.last_exception = None
             self.last_response = None
-            self.last_headers = None
 
-        async def before_process_message(self, consumer, msg):
-            """Track before_process_message calls."""
-            self.before_process_called = True
-            self.last_consumer = consumer
+        async def __call__(self, msg, call_next):
+            self.call_count += 1
             self.last_msg = msg
+            self.last_response = await call_next(msg)
+            return self.last_response
 
-        async def after_process_message(
-            self, consumer, msg, *, result=None, exception=None
-        ):
-            """Track after_process_message calls."""
-            self.after_process_called = True
-            self.last_consumer = consumer
-            self.last_msg = msg
-            self.last_result = result
-            self.last_exception = exception
-
-        async def after_skip_message(self, consumer, msg):
-            """Track after_skip_message calls."""
-            self.after_skip_called = True
-            self.last_consumer = consumer
-            self.last_msg = msg
-
-        async def before_publish_response(
-            self, consumer, msg, response, headers
-        ):
-            """Track before_publish_response calls."""
-            self.before_publish_called = True
-            self.last_consumer = consumer
-            self.last_msg = msg
-            self.last_response = response
-            self.last_headers = headers
-
-    return TestMiddleware()
+    return TrackingMiddleware()
 
 
 @pytest.fixture
 def mutating_middleware():
-    """Middleware that mutates params and headers."""
+    """Middleware that mutates params and headers before call_next."""
 
     class MutatingMiddleware(Middleware):
         """Test implementation that mutates in-place."""
 
-        async def before_process_message(self, consumer, msg):
-            """Mutate params and headers in-place."""
+        async def __call__(self, msg, call_next):
             if msg.body.params is not None:
                 msg.body.params["injected"] = "value"
             msg.headers["x-custom"] = "middleware"
-
-        async def before_publish_response(
-            self, consumer, msg, response, headers
-        ):
-            """Mutate headers in-place."""
-            headers["x-response-header"] = "custom-value"
+            return await call_next(msg)
 
     return MutatingMiddleware()
 

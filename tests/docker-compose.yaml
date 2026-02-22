@@ -1,0 +1,16 @@
+services:
+
+  sqs:
+    container_name: sqs
+    image: softwaremill/elasticmq:1.6.9
+    ports:
+      - '19324:9324'
+      - '19325:9325'
+    volumes:
+      - ./elasticmq.conf:/opt/elasticmq.conf
+    networks:
+      - rebotics
+
+networks:
+  rebotics:
+    driver: bridge

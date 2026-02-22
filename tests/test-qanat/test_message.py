@@ -14,6 +14,20 @@ from qanat.models import JsonRpcRequest
 JsonRpcRequest.model_rebuild(_types_namespace=qanat_types.__dict__)
 
 
+# Helper function for creating BrokerMessage (used by hypothesis tests)
+def create_broker_message(
+    raw, body, headers, received_at=None, queue_name=None
+):
+    """Create BrokerMessage with default values for required parameters."""
+    return BrokerMessage(
+        raw=raw,
+        body=body,
+        headers=headers,
+        received_at=received_at or 1234567890.0,
+        queue_name=queue_name or "test-queue",
+    )
+
+
 # === Hypothesis Strategies ===
 
 
@@ -73,9 +87,10 @@ class TestBrokerMessageConstruction:
         raw_message_dict,
         json_rpc_request_string_id,
         headers_with_values,
+        broker_message_factory,
     ):
         """BrokerMessage stores raw, body, and headers."""
-        msg = BrokerMessage(
+        msg = broker_message_factory(
             raw=raw_message_dict,
             body=json_rpc_request_string_id,
             headers=headers_with_values,
@@ -85,10 +100,12 @@ class TestBrokerMessageConstruction:
         assert msg.body is json_rpc_request_string_id
         assert msg.headers is headers_with_values
 
-    def test_raw_as_dict(self, json_rpc_notification, empty_headers):
+    def test_raw_as_dict(
+        self, json_rpc_notification, empty_headers, broker_message_factory
+    ):
         """Raw message can be a dict."""
         raw = {"native_field": "value", "count": 42}
-        msg = BrokerMessage(
+        msg = broker_message_factory(
             raw=raw, body=json_rpc_notification, headers=empty_headers
         )
 
@@ -101,9 +118,10 @@ class TestBrokerMessageConstruction:
         raw_message_object,
         json_rpc_notification,
         empty_headers,
+        broker_message_factory,
     ):
         """Raw message can be a custom object."""
-        msg = BrokerMessage(
+        msg = broker_message_factory(
             raw=raw_message_object,
             body=json_rpc_notification,
             headers=empty_headers,
@@ -113,17 +131,21 @@ class TestBrokerMessageConstruction:
         assert msg.raw.id == "msg-001"
         assert msg.raw.data == b"binary data"
 
-    def test_raw_as_none(self, json_rpc_notification, empty_headers):
+    def test_raw_as_none(
+        self, json_rpc_notification, empty_headers, broker_message_factory
+    ):
         """Raw message can be None."""
-        msg = BrokerMessage(
+        msg = broker_message_factory(
             raw=None, body=json_rpc_notification, headers=empty_headers
         )
 
         assert msg.raw is None
 
-    def test_empty_headers(self, raw_message_dict, json_rpc_notification):
+    def test_empty_headers(
+        self, raw_message_dict, json_rpc_notification, broker_message_factory
+    ):
         """Headers can be an empty dict."""
-        msg = BrokerMessage(
+        msg = broker_message_factory(
             raw=raw_message_dict,
             body=json_rpc_notification,
             headers={},
@@ -135,6 +157,7 @@ class TestBrokerMessageConstruction:
         self,
         raw_message_dict,
         json_rpc_notification,
+        broker_message_factory,
     ):
         """Headers can contain multiple string-to-string entries."""
         headers = {
@@ -143,7 +166,7 @@ class TestBrokerMessageConstruction:
             "x-correlation-id": "abc-123",
             "x-custom": "value",
         }
-        msg = BrokerMessage(
+        msg = broker_message_factory(
             raw=raw_message_dict,
             body=json_rpc_notification,
             headers=headers,
@@ -160,9 +183,10 @@ class TestBrokerMessageConstruction:
         raw_message_dict,
         json_rpc_request_string_id,
         empty_headers,
+        broker_message_factory,
     ):
         """BrokerMessage stores exact body reference."""
-        msg = BrokerMessage(
+        msg = broker_message_factory(
             raw=raw_message_dict,
             body=json_rpc_request_string_id,
             headers=empty_headers,
@@ -177,15 +201,16 @@ class TestBrokerMessageConstruction:
         self,
         raw_message_dict,
         empty_headers,
+        broker_message_factory,
     ):
         """Multiple BrokerMessage instances don't share state."""
         body1 = JsonRpcRequest(method="method1", id="id1")
         body2 = JsonRpcRequest(method="method2", id="id2")
 
-        msg1 = BrokerMessage(
+        msg1 = broker_message_factory(
             raw=raw_message_dict, body=body1, headers=empty_headers
         )
-        msg2 = BrokerMessage(
+        msg2 = broker_message_factory(
             raw=raw_message_dict, body=body2, headers=empty_headers
         )
 
@@ -197,9 +222,11 @@ class TestBrokerMessageConstruction:
 class TestBrokerMessageCorrelationId:
     """Test correlation_id property returns self.body.id."""
 
-    def test_correlation_id_with_string_id(self, json_rpc_request_string_id):
+    def test_correlation_id_with_string_id(
+        self, json_rpc_request_string_id, broker_message_factory
+    ):
         """correlation_id returns string ID from body."""
-        msg = BrokerMessage(
+        msg = broker_message_factory(
             raw=None,
             body=json_rpc_request_string_id,
             headers={},
@@ -208,9 +235,11 @@ class TestBrokerMessageCorrelationId:
         assert msg.correlation_id == "request-123"
         assert msg.correlation_id == msg.body.id
 
-    def test_correlation_id_with_int_id(self, json_rpc_request_int_id):
+    def test_correlation_id_with_int_id(
+        self, json_rpc_request_int_id, broker_message_factory
+    ):
         """correlation_id returns integer ID from body."""
-        msg = BrokerMessage(
+        msg = broker_message_factory(
             raw=None,
             body=json_rpc_request_int_id,
             headers={},
@@ -219,9 +248,11 @@ class TestBrokerMessageCorrelationId:
         assert msg.correlation_id == 42
         assert msg.correlation_id == msg.body.id
 
-    def test_correlation_id_with_none_notification(self, json_rpc_notification):
+    def test_correlation_id_with_none_notification(
+        self, json_rpc_notification, broker_message_factory
+    ):
         """correlation_id returns None for notifications."""
-        msg = BrokerMessage(
+        msg = broker_message_factory(
             raw=None,
             body=json_rpc_notification,
             headers={},
@@ -242,27 +273,29 @@ class TestBrokerMessageCorrelationId:
             None,
         ],
     )
-    def test_correlation_id_with_various_ids(self, request_id):
+    def test_correlation_id_with_various_ids(
+        self, request_id, broker_message_factory
+    ):
         """correlation_id works with all valid JSON-RPC ID types."""
         body = JsonRpcRequest(method="test", id=request_id)
-        msg = BrokerMessage(raw=None, body=body, headers={})
+        msg = broker_message_factory(raw=None, body=body, headers={})
 
         assert msg.correlation_id == request_id
         assert msg.correlation_id == body.id
 
-    def test_correlation_id_with_zero_is_valid(self):
+    def test_correlation_id_with_zero_is_valid(self, broker_message_factory):
         """correlation_id with integer 0 (falsy but valid)."""
         body = JsonRpcRequest(method="test", id=0)
-        msg = BrokerMessage(raw=None, body=body, headers={})
+        msg = broker_message_factory(raw=None, body=body, headers={})
 
         assert msg.correlation_id == 0
         assert msg.correlation_id is not None
         assert msg.correlation_id == msg.body.id
 
-    def test_correlation_id_with_negative_int(self):
+    def test_correlation_id_with_negative_int(self, broker_message_factory):
         """correlation_id with negative integer."""
         body = JsonRpcRequest(method="test", id=-999)
-        msg = BrokerMessage(raw=None, body=body, headers={})
+        msg = broker_message_factory(raw=None, body=body, headers={})
 
         assert msg.correlation_id == -999
         assert msg.correlation_id == msg.body.id
@@ -271,32 +304,48 @@ class TestBrokerMessageCorrelationId:
 class TestBrokerMessageAbstractProperties:
     """Test that abstract properties raise NotImplementedError."""
 
-    def test_delivery_count_raises_not_implemented(self, json_rpc_notification):
+    def test_delivery_count_raises_not_implemented(
+        self, json_rpc_notification, broker_message_factory
+    ):
         """delivery_count property raises NotImplementedError."""
-        msg = BrokerMessage(raw=None, body=json_rpc_notification, headers={})
+        msg = broker_message_factory(
+            raw=None, body=json_rpc_notification, headers={}
+        )
 
         with pytest.raises(NotImplementedError):
             _ = msg.delivery_count
 
-    def test_reply_to_raises_not_implemented(self, json_rpc_notification):
+    def test_reply_to_raises_not_implemented(
+        self, json_rpc_notification, broker_message_factory
+    ):
         """reply_to property raises NotImplementedError."""
-        msg = BrokerMessage(raw=None, body=json_rpc_notification, headers={})
+        msg = broker_message_factory(
+            raw=None, body=json_rpc_notification, headers={}
+        )
 
         with pytest.raises(NotImplementedError):
             _ = msg.reply_to
 
-    def test_delivery_count_exception_type(self, json_rpc_notification):
+    def test_delivery_count_exception_type(
+        self, json_rpc_notification, broker_message_factory
+    ):
         """delivery_count raises exactly NotImplementedError."""
-        msg = BrokerMessage(raw=None, body=json_rpc_notification, headers={})
+        msg = broker_message_factory(
+            raw=None, body=json_rpc_notification, headers={}
+        )
 
         with pytest.raises(NotImplementedError) as exc_info:
             _ = msg.delivery_count
 
         assert type(exc_info.value) is NotImplementedError
 
-    def test_reply_to_exception_type(self, json_rpc_notification):
+    def test_reply_to_exception_type(
+        self, json_rpc_notification, broker_message_factory
+    ):
         """reply_to raises exactly NotImplementedError."""
-        msg = BrokerMessage(raw=None, body=json_rpc_notification, headers={})
+        msg = broker_message_factory(
+            raw=None, body=json_rpc_notification, headers={}
+        )
 
         with pytest.raises(NotImplementedError) as exc_info:
             _ = msg.reply_to
@@ -308,33 +357,49 @@ class TestBrokerMessageAbstractMethods:
     """Test that abstract async methods raise NotImplementedError."""
 
     @pytest.mark.asyncio
-    async def test_ack_raises_not_implemented(self, json_rpc_notification):
+    async def test_ack_raises_not_implemented(
+        self, json_rpc_notification, broker_message_factory
+    ):
         """ack() raises NotImplementedError."""
-        msg = BrokerMessage(raw=None, body=json_rpc_notification, headers={})
+        msg = broker_message_factory(
+            raw=None, body=json_rpc_notification, headers={}
+        )
 
         with pytest.raises(NotImplementedError):
             await msg.ack()
 
     @pytest.mark.asyncio
-    async def test_reject_raises_not_implemented(self, json_rpc_notification):
+    async def test_reject_raises_not_implemented(
+        self, json_rpc_notification, broker_message_factory
+    ):
         """reject() raises NotImplementedError."""
-        msg = BrokerMessage(raw=None, body=json_rpc_notification, headers={})
+        msg = broker_message_factory(
+            raw=None, body=json_rpc_notification, headers={}
+        )
 
         with pytest.raises(NotImplementedError):
             await msg.reject()
 
     @pytest.mark.asyncio
-    async def test_nack_raises_not_implemented(self, json_rpc_notification):
+    async def test_nack_raises_not_implemented(
+        self, json_rpc_notification, broker_message_factory
+    ):
         """nack(delay) raises NotImplementedError."""
-        msg = BrokerMessage(raw=None, body=json_rpc_notification, headers={})
+        msg = broker_message_factory(
+            raw=None, body=json_rpc_notification, headers={}
+        )
 
         with pytest.raises(NotImplementedError):
             await msg.nack(10.0)
 
     @pytest.mark.asyncio
-    async def test_ack_exception_type(self, json_rpc_notification):
+    async def test_ack_exception_type(
+        self, json_rpc_notification, broker_message_factory
+    ):
         """ack() raises exactly NotImplementedError."""
-        msg = BrokerMessage(raw=None, body=json_rpc_notification, headers={})
+        msg = broker_message_factory(
+            raw=None, body=json_rpc_notification, headers={}
+        )
 
         with pytest.raises(NotImplementedError) as exc_info:
             await msg.ack()
@@ -342,9 +407,13 @@ class TestBrokerMessageAbstractMethods:
         assert type(exc_info.value) is NotImplementedError
 
     @pytest.mark.asyncio
-    async def test_reject_exception_type(self, json_rpc_notification):
+    async def test_reject_exception_type(
+        self, json_rpc_notification, broker_message_factory
+    ):
         """reject() raises exactly NotImplementedError."""
-        msg = BrokerMessage(raw=None, body=json_rpc_notification, headers={})
+        msg = broker_message_factory(
+            raw=None, body=json_rpc_notification, headers={}
+        )
 
         with pytest.raises(NotImplementedError) as exc_info:
             await msg.reject()
@@ -352,9 +421,13 @@ class TestBrokerMessageAbstractMethods:
         assert type(exc_info.value) is NotImplementedError
 
     @pytest.mark.asyncio
-    async def test_nack_exception_type(self, json_rpc_notification):
+    async def test_nack_exception_type(
+        self, json_rpc_notification, broker_message_factory
+    ):
         """nack(delay) raises exactly NotImplementedError."""
-        msg = BrokerMessage(raw=None, body=json_rpc_notification, headers={})
+        msg = broker_message_factory(
+            raw=None, body=json_rpc_notification, headers={}
+        )
 
         with pytest.raises(NotImplementedError) as exc_info:
             await msg.nack(10.0)
@@ -366,17 +439,25 @@ class TestBrokerMessageAbstractMethods:
         "delay",
         [0.0, 0.1, 1.0, 10.0, 30.0, 60.0, 300.0],
     )
-    async def test_nack_with_various_delays(self, json_rpc_notification, delay):
+    async def test_nack_with_various_delays(
+        self, json_rpc_notification, delay, broker_message_factory
+    ):
         """nack() raises NotImplementedError with various delay values."""
-        msg = BrokerMessage(raw=None, body=json_rpc_notification, headers={})
+        msg = broker_message_factory(
+            raw=None, body=json_rpc_notification, headers={}
+        )
 
         with pytest.raises(NotImplementedError):
             await msg.nack(delay)
 
     @pytest.mark.asyncio
-    async def test_nack_with_int_delay(self, json_rpc_notification):
+    async def test_nack_with_int_delay(
+        self, json_rpc_notification, broker_message_factory
+    ):
         """nack() with integer delay (valid as Seconds type)."""
-        msg = BrokerMessage(raw=None, body=json_rpc_notification, headers={})
+        msg = broker_message_factory(
+            raw=None, body=json_rpc_notification, headers={}
+        )
 
         with pytest.raises(NotImplementedError):
             await msg.nack(30)  # int is valid for Seconds type
@@ -397,7 +478,7 @@ class TestBrokerMessageFuzz:
     def test_construction_with_generated_inputs(self, raw, jsonrpc_id, headers):
         """BrokerMessage construction works with any valid inputs."""
         body = JsonRpcRequest(method="fuzz.test", id=jsonrpc_id)
-        msg = BrokerMessage(raw=raw, body=body, headers=headers)
+        msg = create_broker_message(raw=raw, body=body, headers=headers)
 
         assert msg.raw == raw
         assert msg.body is body
@@ -407,7 +488,7 @@ class TestBrokerMessageFuzz:
     def test_correlation_id_matches_body_id(self, jsonrpc_id):
         """correlation_id always returns self.body.id."""
         body = JsonRpcRequest(method="fuzz.test", id=jsonrpc_id)
-        msg = BrokerMessage(raw=None, body=body, headers={})
+        msg = create_broker_message(raw=None, body=body, headers={})
 
         assert msg.correlation_id == body.id
         assert msg.correlation_id == jsonrpc_id
@@ -419,7 +500,7 @@ class TestBrokerMessageFuzz:
     def test_stores_exact_references(self, raw, headers):
         """BrokerMessage stores exact object references."""
         body = JsonRpcRequest(method="fuzz.test")
-        msg = BrokerMessage(raw=raw, body=body, headers=headers)
+        msg = create_broker_message(raw=raw, body=body, headers=headers)
 
         assert msg.body is body
         # For mutable types, verify identity not just equality
@@ -430,7 +511,7 @@ class TestBrokerMessageFuzz:
     def test_abstract_properties_always_raise(self, jsonrpc_id):
         """Abstract properties always raise NotImplementedError."""
         body = JsonRpcRequest(method="fuzz.test", id=jsonrpc_id)
-        msg = BrokerMessage(raw=None, body=body, headers={})
+        msg = create_broker_message(raw=None, body=body, headers={})
 
         with pytest.raises(NotImplementedError):
             _ = msg.delivery_count
@@ -443,7 +524,7 @@ class TestBrokerMessageFuzz:
     async def test_abstract_methods_always_raise(self, jsonrpc_id):
         """Abstract async methods always raise NotImplementedError."""
         body = JsonRpcRequest(method="fuzz.test", id=jsonrpc_id)
-        msg = BrokerMessage(raw=None, body=body, headers={})
+        msg = create_broker_message(raw=None, body=body, headers={})
 
         with pytest.raises(NotImplementedError):
             await msg.ack()

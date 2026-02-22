@@ -90,6 +90,42 @@ def headers_with_values():
     }
 
 
+@pytest.fixture
+def current_timestamp():
+    """Fixed timestamp for reproducible tests."""
+    return 1234567890.0
+
+
+@pytest.fixture
+def queue_name_default():
+    """Default queue name for test messages."""
+    return "test-queue"
+
+
+@pytest.fixture
+def broker_message_factory(current_timestamp, queue_name_default):
+    """Factory for creating BrokerMessage instances with defaults.
+
+    Usage:
+        msg = broker_message_factory(raw=raw, body=body, headers=headers)
+        msg = broker_message_factory(raw=raw, body=body, headers={},
+                                     received_at=custom_time)
+    """
+
+    def _create(raw, body, headers, received_at=None, queue_name=None):
+        from qanat.message import BrokerMessage
+
+        return BrokerMessage(
+            raw=raw,
+            body=body,
+            headers=headers,
+            received_at=received_at or current_timestamp,
+            queue_name=queue_name or queue_name_default,
+        )
+
+    return _create
+
+
 # === Hypothesis Strategies ===
 
 

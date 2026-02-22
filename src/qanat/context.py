@@ -14,7 +14,21 @@ if TYPE_CHECKING:
 
 
 class QanatContext:
-    """"""
+    """Execution context for a single task handler invocation.
+
+    Provides access to message metadata, route configuration, and
+    cancellation primitives for handlers running in THREAD or PROCESS
+    execution modes.
+
+    Attributes:
+        broker_message_id: Unique broker-assigned message identifier.
+        msg: The BrokerMessage being processed.
+        route: TaskRoute configuration for the current handler.
+        max_attempts: Effective retry limit (1 + max_retries).
+        broker_latency: Time between enqueue and receive (seconds).
+        internal_latency: Time between receive and handler invocation
+            (seconds).
+    """
 
     def __init__(self) -> None:
         self.broker_message_id: str | None = None
@@ -66,12 +80,18 @@ def get_qanat_context() -> QanatContext:
 
 
 class QanatContextFilter(logging.Filter):
-    """
-    A filter that extracts data from contextvars
-    and automatically attaches it to any log entry.
+    """Logging filter that injects QanatContext fields into log records.
+
+    Automatically extracts message metadata, route configuration, and
+    latency metrics from the active QanatContext and attaches them to
+    every log record as attributes.
+
+    Attributes:
+        default_value: Placeholder string used when context fields are
+            not available (e.g., outside handler execution).
     """
 
-    def __init__(self, default_value="-"):
+    def __init__(self, default_value: str | None = "-") -> None:
         super().__init__()
         self.default_value = default_value
 

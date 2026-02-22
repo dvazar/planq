@@ -8,14 +8,13 @@ from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from qanat.models import ConsumerSettings
+
 from .conftest import (
     invalid_concurrency,
     invalid_floats,
     invalid_max_retries,
-    invalid_unroutable_max_retries,
     valid_consumer_settings_kwargs,
 )
-
 
 # === Layer 1: Parametrized Edge Cases ===
 
@@ -72,39 +71,6 @@ class TestConsumerSettingsValidation:
         """Valid max_retries values are accepted (0, positive, None)."""
         settings = ConsumerSettings(max_retries=max_retries)
         assert settings.max_retries == max_retries
-
-    # unroutable_max_retries validation tests
-
-    @pytest.mark.parametrize(
-        "unroutable_max_retries",
-        [-1, -999],
-    )
-    def test_unroutable_max_retries_validation_fails(
-        self, unroutable_max_retries
-    ):
-        """unroutable_max_retries must be non-negative."""
-        with pytest.raises(ValidationError) as exc_info:
-            ConsumerSettings(unroutable_max_retries=unroutable_max_retries)
-
-        errors = exc_info.value.errors()
-        assert len(errors) == 1
-        assert errors[0]["loc"] == ("unroutable_max_retries",)
-        assert "unroutable_max_retries must be non-negative" in str(
-            errors[0]["msg"]
-        )
-
-    @pytest.mark.parametrize(
-        "unroutable_max_retries",
-        [0, 1, 10, 100],
-    )
-    def test_unroutable_max_retries_validation_succeeds(
-        self, unroutable_max_retries
-    ):
-        """Valid unroutable_max_retries values are accepted."""
-        settings = ConsumerSettings(
-            unroutable_max_retries=unroutable_max_retries
-        )
-        assert settings.unroutable_max_retries == unroutable_max_retries
 
     # Float field validation tests (retry_base_delay, retry_max_delay,
     # process_timeout_grace_period)
@@ -200,7 +166,6 @@ class TestConsumerSettingsConstruction:
         settings = ConsumerSettings()
         assert settings.concurrency == 10
         assert settings.max_retries is None
-        assert settings.unroutable_max_retries == 10
         assert settings.retry_base_delay == 1.0
         assert settings.retry_max_delay == 300.0
         assert settings.process_timeout_grace_period == 5.0
@@ -210,14 +175,12 @@ class TestConsumerSettingsConstruction:
         settings = ConsumerSettings(
             concurrency=50,
             max_retries=5,
-            unroutable_max_retries=3,
             retry_base_delay=2.0,
             retry_max_delay=600.0,
             process_timeout_grace_period=10.0,
         )
         assert settings.concurrency == 50
         assert settings.max_retries == 5
-        assert settings.unroutable_max_retries == 3
         assert settings.retry_base_delay == 2.0
         assert settings.retry_max_delay == 600.0
         assert settings.process_timeout_grace_period == 10.0
@@ -230,7 +193,6 @@ class TestConsumerSettingsConstruction:
         )
         assert settings.concurrency == 25
         assert settings.max_retries is None  # default
-        assert settings.unroutable_max_retries == 10  # default
         assert settings.retry_base_delay == 5.0
         assert settings.retry_max_delay == 300.0  # default
         assert settings.process_timeout_grace_period == 5.0  # default
@@ -239,11 +201,6 @@ class TestConsumerSettingsConstruction:
         """max_retries=0 means one attempt with no retries."""
         settings = ConsumerSettings(max_retries=0)
         assert settings.max_retries == 0
-
-    def test_unroutable_max_retries_zero_is_valid(self):
-        """unroutable_max_retries=0 means reject immediately."""
-        settings = ConsumerSettings(unroutable_max_retries=0)
-        assert settings.unroutable_max_retries == 0
 
 
 class TestConsumerSettingsImmutability:
@@ -260,15 +217,6 @@ class TestConsumerSettingsImmutability:
         """Cannot modify max_retries after construction."""
         with pytest.raises(ValidationError) as exc_info:
             default_consumer_settings.max_retries = 5
-
-        assert "frozen" in str(exc_info.value).lower()
-
-    def test_cannot_modify_unroutable_max_retries(
-        self, default_consumer_settings
-    ):
-        """Cannot modify unroutable_max_retries after construction."""
-        with pytest.raises(ValidationError) as exc_info:
-            default_consumer_settings.unroutable_max_retries = 5
 
         assert "frozen" in str(exc_info.value).lower()
 
@@ -376,31 +324,6 @@ class TestConsumerSettingsFuzz:
         )
 
     @pytest.mark.hypothesis
-    @given(st.integers(min_value=0, max_value=1000))
-    def test_valid_unroutable_max_retries_always_succeeds(
-        self, unroutable_max_retries
-    ):
-        """Non-negative unroutable_max_retries is valid."""
-        settings = ConsumerSettings(
-            unroutable_max_retries=unroutable_max_retries
-        )
-        assert settings.unroutable_max_retries == unroutable_max_retries
-
-    @pytest.mark.hypothesis
-    @given(invalid_unroutable_max_retries)
-    def test_invalid_unroutable_max_retries_always_fails(
-        self, unroutable_max_retries
-    ):
-        """Negative unroutable_max_retries values always fail."""
-        with pytest.raises(ValidationError) as exc_info:
-            ConsumerSettings(unroutable_max_retries=unroutable_max_retries)
-
-        errors = exc_info.value.errors()
-        assert any(
-            error["loc"] == ("unroutable_max_retries",) for error in errors
-        )
-
-    @pytest.mark.hypothesis
     @given(st.floats(min_value=0.001, max_value=1000.0))
     def test_valid_retry_base_delay_always_succeeds(self, retry_base_delay):
         """Positive retry_base_delay is valid."""
@@ -461,9 +384,6 @@ class TestConsumerSettingsFuzz:
         settings = ConsumerSettings(**kwargs)
         assert settings.concurrency == kwargs["concurrency"]
         assert settings.max_retries == kwargs["max_retries"]
-        assert (
-            settings.unroutable_max_retries == kwargs["unroutable_max_retries"]
-        )
         assert settings.retry_base_delay == kwargs["retry_base_delay"]
         assert settings.retry_max_delay == kwargs["retry_max_delay"]
         assert (

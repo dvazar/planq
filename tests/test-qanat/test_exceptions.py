@@ -7,7 +7,6 @@ import pytest
 from qanat.exceptions import (
     FeatureNotSupportedError,
     HandlerTimeout,
-    MessageExpired,
     MethodNotFound,
     ProcessShutdown,
     QanatError,
@@ -22,10 +21,6 @@ class TestExceptionInheritance:
     def test_qanat_error_inherits_from_exception(self):
         """QanatError is a subclass of Exception."""
         assert issubclass(QanatError, Exception)
-
-    def test_message_expired_inherits_from_qanat_error(self):
-        """MessageExpired inherits from QanatError."""
-        assert issubclass(MessageExpired, QanatError)
 
     def test_method_not_found_inherits_from_qanat_error(self):
         """MethodNotFound inherits from QanatError."""
@@ -82,36 +77,6 @@ class TestQanatError:
 
 
 # === Layer 3: Simple Exceptions ===
-
-
-class TestMessageExpired:
-    """Test MessageExpired exception."""
-
-    def test_can_raise_message_expired(self):
-        """MessageExpired can be raised."""
-        with pytest.raises(MessageExpired):
-            raise MessageExpired("TTL exceeded")
-
-    def test_can_catch_message_expired(self):
-        """MessageExpired can be caught."""
-        try:
-            raise MessageExpired("TTL exceeded")
-        except MessageExpired as exc:
-            assert str(exc) == "TTL exceeded"
-
-    def test_can_catch_as_qanat_error(self):
-        """MessageExpired can be caught as QanatError."""
-        try:
-            raise MessageExpired("TTL exceeded")
-        except QanatError as exc:
-            assert isinstance(exc, MessageExpired)
-
-    def test_can_catch_as_exception(self):
-        """MessageExpired can be caught as Exception."""
-        try:
-            raise MessageExpired("TTL exceeded")
-        except Exception as exc:
-            assert isinstance(exc, MessageExpired)
 
 
 class TestMethodNotFound:

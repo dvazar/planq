@@ -476,7 +476,7 @@ class QanatConsumer:
 
         # 3. Handle errors
         if handler_exc is not None:
-            ctx = {
+            log_ctx = {
                 "error_type": type(handler_exc).__name__,
                 "error_msg": str(handler_exc),
             }
@@ -485,15 +485,15 @@ class QanatConsumer:
                 logger.warning(
                     "Message processing failed. "
                     "Reason: %(error_type)s(%(error_msg)r)",
-                    ctx,
-                    extra=ctx,
+                    log_ctx,
+                    extra=log_ctx,
                 )
                 raise RetryMessage
 
             logger.error(
                 "Message processing permanently "
                 "failed after %(max_attempts)d attempts",
-                extra=ctx,
+                extra=log_ctx,
                 exc_info=handler_exc,
             )
 
@@ -588,11 +588,8 @@ class QanatConsumer:
             if (backoff := exc.delay) is None:
                 backoff = self._calculate_backoff(msg.delivery_count)
 
-            logger.info(
-                f"Retrying in {backoff:.1f} seconds. "
-                f"Attempt %(attempt)d/%(max_attempts)d",
-                extra={"delay_seconds": backoff},
-            )
+            log_ctx = {"delay_seconds": backoff}
+            logger.info(str(exc), log_ctx, extra=log_ctx)
             await msg.nack(backoff)
 
         except RejectMessage:

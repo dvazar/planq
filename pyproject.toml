@@ -67,6 +67,7 @@ docstring-code-format = false
 testpaths = ["tests"]
 markers = [
     "hypothesis: Property-based tests using hypothesis",
+    "integration: Integration tests requiring external services",
 ]
 addopts = [
     "--strict-markers",

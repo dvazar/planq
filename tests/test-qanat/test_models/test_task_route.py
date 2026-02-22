@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from qanat import enums as qanat_enums
 from qanat.enums import ExecutionMode
 from qanat.models import TaskRoute
+
 from .conftest import (
     invalid_floats,
     invalid_max_retries,

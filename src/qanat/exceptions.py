@@ -72,18 +72,21 @@ class RetryMessage(QanatError):
     Raised when the message should be requeued for later processing.
     """
 
-    def __init__(self, delay: Seconds | None) -> None:
+    def __init__(self, delay: Seconds | None = None) -> None:
         """Initialize with the retry delay.
 
         Args:
             delay: Backoff delay in seconds before the message
                 becomes visible again.
         """
-        if delay <= 0:
+        if delay is not None and delay <= 0:
             raise ValueError("delay must be positive")
 
         self.delay = delay
-        super().__init__(f"Retry message in {delay:.1f} seconds")
+        super().__init__(
+            "Retry message in %(delay_seconds).1f seconds. "
+            "Attempt %(attempt)d/%(max_attempts)d"
+        )
 
 
 #: Alias for RetryMessage for more concise usage in handlers.

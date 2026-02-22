@@ -27,7 +27,6 @@ def valid_consumer_settings_kwargs(draw):
                 st.integers(min_value=0, max_value=100),
             )
         ),
-        "unroutable_max_retries": draw(st.integers(min_value=0, max_value=100)),
         "retry_base_delay": draw(st.floats(min_value=0.1, max_value=100.0)),
         "retry_max_delay": draw(st.floats(min_value=1.0, max_value=1000.0)),
         "process_timeout_grace_period": draw(
@@ -86,8 +85,6 @@ invalid_floats = st.one_of(
 invalid_max_retries = st.integers(max_value=-1)
 
 invalid_concurrency = st.integers(max_value=0)
-
-invalid_unroutable_max_retries = st.integers(max_value=-1)
 
 
 # === Fixtures ===
