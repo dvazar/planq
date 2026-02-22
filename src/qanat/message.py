@@ -28,6 +28,8 @@ class BrokerMessage:
         raw: Any,
         body: JsonRpcRequest,
         headers: Headers,
+        received_at: Seconds,
+        queue_name: str,
     ) -> None:
         """Store the raw message, parsed body, and normalised headers.
 
@@ -36,18 +38,35 @@ class BrokerMessage:
             body: Validated :class:`~qanat.models.JsonRpcRequest`.
             headers: Flat string-to-string header mapping extracted
                 from broker-specific metadata.
+            received_at: Unix timestamp when the message was received.
+            queue_name: Name of the queue this message was received from.
         """
         self.raw = raw
         self.body = body
         self.headers = headers
+        self.received_at = received_at
+        self.queue_name = queue_name
 
     @property
-    def correlation_id(self) -> JsonRpcId:
-        """JSON-RPC message identifier from the request body.
+    def broker_message_id(self):
+        """Unique identifier for the message from the broker's perspective.
 
-        ``None`` for notifications (fire-and-forget messages).
+        May be used for logging, tracing, and debugging. Not used by
+        the library for routing or deduplication.
+
+        Raises:
+            NotImplementedError: Must be overridden by subclasses.
         """
-        return self.body.id
+        raise NotImplementedError
+
+    @property
+    def enqueued_at(self) -> float:
+        """Unix timestamp when the message was enqueued.
+
+        Raises:
+            NotImplementedError: Must be overridden by subclasses.
+        """
+        raise NotImplementedError
 
     @property
     def delivery_count(self) -> int:
@@ -66,6 +85,14 @@ class BrokerMessage:
             NotImplementedError: Must be overridden by subclasses.
         """
         raise NotImplementedError
+
+    @property
+    def correlation_id(self) -> JsonRpcId:
+        """JSON-RPC message identifier from the request body.
+
+        ``None`` for notifications (fire-and-forget messages).
+        """
+        return self.body.id
 
     async def ack(self) -> None:
         """Acknowledge successful processing and remove the message.

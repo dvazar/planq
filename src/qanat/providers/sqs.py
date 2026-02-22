@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Final, override
 from urllib.parse import urlparse
@@ -18,13 +19,13 @@ from qanat.types import Headers
 if TYPE_CHECKING:
     from qanat.types import Seconds
 
-_SQS_MAX_BATCH_SIZE: Final = 10
+_SQS_MAX_BATCH_SIZE: Final[int] = 10
 """Hard SQS limit on messages per ``receive_message`` call."""
 
-_SQS_WAIT_SECONDS: Final = 20
+_SQS_WAIT_SECONDS: Final[int] = 20
 """Maximum long-polling wait time supported by SQS."""
 
-_SQS_MAX_DELAY_SECONDS: Final = 900
+_SQS_MAX_DELAY_SECONDS: Final[int] = 900
 """Maximum ``DelaySeconds`` value supported by SQS (15 minutes)."""
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,8 @@ class SqsBrokerMessage(BrokerMessage):
         raw: dict[str, Any],
         body: JsonRpcRequest,
         headers: Headers,
+        received_at: Seconds,
+        queue_name: str,
         sqs_client: Any,
         queue_url: str,
     ) -> None:
@@ -59,13 +62,29 @@ class SqsBrokerMessage(BrokerMessage):
                 ``Attributes``, ``MessageAttributes``, etc.).
             body: Validated JSON-RPC request parsed from the message body.
             headers: Normalised qanat headers.
+            received_at: Unix timestamp when the message was received.
+            queue_name: Name of the SQS queue this message was received from.
             sqs_client: Active ``aiobotocore`` SQS client.
             queue_url: Full SQS queue URL used for all API calls.
         """
-        super().__init__(raw, body, headers)
+        super().__init__(raw, body, headers, received_at, queue_name)
         self._sqs_client = sqs_client
         self._queue_url = queue_url
         self._receipt_handle: str = raw["ReceiptHandle"]
+
+    @property
+    @override
+    def broker_message_id(self) -> str:
+        """SQS MessageId for logging and tracing."""
+        return self.raw["MessageId"]
+
+    @property
+    @override
+    def enqueued_at(self) -> float:
+        """Unix timestamp when the message was enqueued, derived from the
+        ``SentTimestamp`` SQS attribute.
+        """
+        return float(self.raw["Attributes"]["SentTimestamp"]) / 1000.0
 
     @property
     @override
@@ -265,6 +284,8 @@ class SqsBroker(BaseBroker):
         Yields:
             :class:`SqsBrokerMessage` instances ready for processing.
         """
+        queue_name = self.get_queue_name(queue)
+
         while True:
             resp = await self._client.receive_message(
                 QueueUrl=queue,
@@ -273,6 +294,8 @@ class SqsBroker(BaseBroker):
                 AttributeNames=["All"],
                 MessageAttributeNames=["All"],
             )
+
+            received_at = time.time()
 
             for raw_msg in resp.get("Messages", ()):
                 try:
@@ -287,7 +310,7 @@ class SqsBroker(BaseBroker):
                     except Exception as exc:
                         logger.exception(
                             "Failed to handle poison message %s",
-                            raw_msg.get("MessageId", "unknown"),
+                            raw_msg["MessageId"],
                             exc_info=exc,
                         )
                     continue
@@ -303,6 +326,8 @@ class SqsBroker(BaseBroker):
                     raw=raw_msg,
                     body=body,
                     headers=headers,
+                    received_at=received_at,
+                    queue_name=queue_name,
                     sqs_client=self._client,
                     queue_url=queue,
                 )

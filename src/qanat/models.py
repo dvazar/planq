@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any, Callable
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
     from qanat.enums import ExecutionMode
@@ -25,10 +25,6 @@ class ConsumerSettings(BaseModel):
     # None defers to DEFAULT_MAX_RETRIES.
     # Zero means one attempt (initial delivery only, no retries).
     max_retries: int | None = None
-
-    # Maximum requeue attempts when no route matches the method name.
-    # Zero means reject immediately on first unroutable message.
-    unroutable_max_retries: int = 10
 
     # Initial backoff delay in seconds; doubles with each retry attempt.
     # Must be > 0.
@@ -57,16 +53,6 @@ class ConsumerSettings(BaseModel):
                 "max_retries must be non-negative "
                 "(0 = one attempt with no retries, "
                 "None = use DEFAULT_MAX_RETRIES)"
-            )
-        return v
-
-    @field_validator("unroutable_max_retries")
-    @classmethod
-    def validate_unroutable_max_retries(cls, v: int) -> int:
-        if v < 0:
-            raise ValueError(
-                "unroutable_max_retries must be non-negative "
-                "(0 = reject immediately on unroutable message)"
             )
         return v
 
@@ -170,6 +156,13 @@ class JsonRpcRequest(BaseModel):
     # Request identifier; ``None`` for notifications.
     id: JsonRpcId = None
 
+    @field_validator("id")
+    @classmethod
+    def validate_empty_string(cls, v: JsonRpcId) -> JsonRpcId:
+        if v == "":
+            return None
+        return v
+
 
 class JsonRpcErrorDetail(BaseModel):
     """Structured error payload embedded in a :class:`JsonRpcResponse`.
@@ -202,3 +195,42 @@ class JsonRpcResponse(BaseModel):
     error: JsonRpcErrorDetail | None = None
     # Echo of the original request's ``id``.
     id: JsonRpcId
+
+    # Transport-only headers enriched by middleware and handlers.
+    # Excluded from JSON serialization (model_dump / model_dump_json).
+    headers: dict[str, str] = Field(default_factory=dict, exclude=True)
+
+
+class TaskResult:
+    """Optional wrapper for handler return values with headers.
+
+    Handlers return ``TaskResult`` instead of a plain value when
+    they need to attach custom transport headers to the outgoing
+    response (e.g. ``x-rate-limit``, ``x-trace-id``).
+
+    Example::
+
+        @consumer.task("my.method")
+        async def handle(name: str) -> TaskResult:
+            return TaskResult(
+                result={"greeting": f"Hi {name}"},
+                headers={"x-rate-limit": "100"},
+            )
+    """
+
+    __slots__ = ("result", "headers")
+
+    def __init__(
+        self,
+        result: Any,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        """Initialize with a result value and optional headers.
+
+        Args:
+            result: The handler's return value.
+            headers: Optional transport headers to attach to the
+                outgoing response message.
+        """
+        self.result = result
+        self.headers = headers or {}

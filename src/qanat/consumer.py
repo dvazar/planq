@@ -9,35 +9,42 @@ import os
 import signal
 import sys
 import threading
+import time
 import uuid
 from concurrent.futures import Future, ProcessPoolExecutor
 from functools import partial
 from random import uniform
 from typing import TYPE_CHECKING, Any, Callable, Final
 
-from qanat.context import get_task_context
+from qanat.context import get_qanat_context
 from qanat.enums import ExecutionMode, JsonRpcError
 from qanat.exceptions import (
     FeatureNotSupportedError,
     HandlerTimeout,
     ProcessShutdown,
+    RejectMessage,
+    RetryMessage,
 )
 from qanat.middleware import (
     DeadlineMiddleware,
-    SkipMessage,
+    Middleware,
 )
 from qanat.models import (
     ConsumerSettings,
     JsonRpcErrorDetail,
     JsonRpcResponse,
+    TaskResult,
     TaskRoute,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from qanat.broker import BaseBroker
     from qanat.message import BrokerMessage
-    from qanat.middleware import Middleware
     from qanat.types import Seconds
+
+    type CallNext = Callable[[BrokerMessage], Awaitable[JsonRpcResponse | None]]
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +118,9 @@ class _ProcessPool:
                     else:
                         self._active_pids[task_id] = pid
             except Exception as exc:
-                logger.exception("_ProcessPool monitor error", exc_info=exc)
+                logger.exception(
+                    f"{type(self).__name__} monitor error", exc_info=exc
+                )
 
     def submit(
         self,
@@ -179,8 +188,10 @@ class _ProcessPool:
 class QanatConsumer:
     """Transport-agnostic async task queue consumer.
 
-    Processes messages through a pluggable middleware pipeline followed by
-    routing and execution. Built-in middlewares handle TTL and retry checks.
+    Processes messages through an onion-style middleware pipeline
+    followed by routing and execution. Built-in middlewares handle
+    deadline checks; retry and transport operations are consolidated
+    in ``_process_message``.
 
     Register handlers with the :meth:`task` decorator, then call
     :meth:`run` to start consuming. Handles SIGINT/SIGTERM for
@@ -209,12 +220,13 @@ class QanatConsumer:
                 :class:`~qanat.models.ConsumerSettings` with default
                 values if not provided.
             middlewares: Ordered list of
-                :class:`~qanat.middleware.Middleware` instances. Defaults
-                to ``[DeadlineMiddleware()]`` when ``None``.
+                :class:`~qanat.middleware.Middleware` instances.
+                Defaults to ``[DeadlineMiddleware()]`` when ``None``.
                 Pass an empty list to disable all middleware.
         """
         self.broker = broker
         self.routes: dict[str, TaskRoute] = {}
+
         self._pool: _ProcessPool | None = (
             _ProcessPool(max_workers=process_workers)
             if process_workers
@@ -226,6 +238,7 @@ class QanatConsumer:
         self._middlewares: list[Middleware] = (
             middlewares if middlewares is not None else [DeadlineMiddleware()]
         )
+        self._build_pipeline()
 
     def task(
         self,
@@ -334,12 +347,12 @@ class QanatConsumer:
         if time_limit is None:
             return await asyncio.to_thread(handler, *args, **kwargs)
 
-        ctx = get_task_context()
+        task_ctx = get_qanat_context()
         try:
             async with asyncio.timeout(time_limit):
                 return await asyncio.to_thread(handler, *args, **kwargs)
         except TimeoutError as e:
-            ctx.cancel()
+            task_ctx.cancel()
             raise HandlerTimeout(time_limit) from e
 
     async def _execute_process(
@@ -411,227 +424,183 @@ class QanatConsumer:
                     grace_period=route.grace_period,
                 )
 
-    def _log_retry_warning(
+    def _build_pipeline(self) -> None:
+        """Build the middleware chain ending at _router_endpoint."""
+        pipeline: CallNext = self._router_endpoint
+        for mw in reversed(self._middlewares):
+            pipeline = self._wrap_middleware(mw, pipeline)
+        self._pipeline = pipeline
+
+    @staticmethod
+    def _wrap_middleware(mw: Middleware, call_next: CallNext) -> CallNext:
+        async def wrapped(msg: BrokerMessage) -> JsonRpcResponse | None:
+            return await mw(msg, call_next)
+
+        return wrapped
+
+    async def _router_endpoint(
         self,
         msg: BrokerMessage,
-        exc: Exception,
-        backoff: float,
-        total_attempts: int,
-    ):
-        ctx = {
-            "method": msg.body.method,
-            "correlation_id": msg.correlation_id,
-            "attempt": msg.delivery_count,
-            "total_attempts": total_attempts,
-            "delay_seconds": backoff,
-            "error_type": type(exc).__name__,
-            "error_msg": str(exc),
-        }
-        logger.warning(
-            'Task "%(method)s" (id: %(correlation_id)s) failed. '
-            "Attempt %(attempt)d/%(total_attempts)d. "
-            "Retrying in %(delay_seconds).1fs. "
-            "Reason: %(error_type)s(%(error_msg)r)",
-            ctx,
-            extra=ctx,
-        )
+    ) -> JsonRpcResponse | None:
+        """Terminal pipeline stage: routing, execution, and retry logic.
 
-    def _log_retry_exhausted_error(
-        self,
-        msg: BrokerMessage,
-        exc: Exception,
-        total_attempts: int,
-    ):
-        ctx = {
-            "method": msg.body.method,
-            "correlation_id": msg.correlation_id,
-            "attempt": msg.delivery_count,
-            "total_attempts": total_attempts,
-            "error_type": type(exc).__name__,
-            "error_msg": str(exc),
-        }
-        logger.error(
-            'Task "%(method)s" (id: %(correlation_id)s) permanently failed '
-            "after %(total_attempts)d attempts",
-            ctx,
-            extra=ctx,
-            exc_info=True,
-        )
+        Args:
+            msg: The incoming broker message.
 
-    def _log_acking_without_reply_info(self, msg: BrokerMessage):
-        ctx = {
-            "method": msg.body.method,
-            "correlation_id": msg.correlation_id,
-        }
-        logger.info(
-            'Task "%(method)s" (id: %(correlation_id)s) has id '
-            "but no reply_to, acking without reply",
-            ctx,
-            extra=ctx,
-        )
+        Returns:
+            ``JsonRpcResponse`` for requests with reply_to,
+            ``None`` otherwise.
 
-    async def _process_message(self, msg: BrokerMessage) -> None:
-        # 1. Run before_process_message middleware hooks
-        try:
-            for mw in self._middlewares:
-                await mw.before_process_message(self, msg)
-        except SkipMessage:
-            for mw in self._middlewares:
-                try:
-                    await mw.after_skip_message(self, msg)
-                except Exception as exc:
-                    logger.exception(
-                        "Middleware %s.after_skip_message raised an error",
-                        type(mw).__name__,
-                        exc_info=exc,
-                    )
-            return
+        Raises:
+            RetryMessage: When the message should be requeued.
+            RejectMessage: When the message should be permanently discarded.
+        """
+        # 1. Route
+        if (route := self.routes.get(msg.body.method)) is None:
+            logger.error("No route for message, rejecting")
+            raise RejectMessage
 
-        # 2. Route
-        route = self.routes.get(msg.body.method)
-        if route is None:
-            unroutable_max_retries = self._settings.unroutable_max_retries
-            if msg.delivery_count >= unroutable_max_retries:
-                ctx = {
-                    "method": msg.body.method,
-                    "correlation_id": msg.correlation_id,
-                    "attempt": msg.delivery_count,
-                    "unroutable_max_retries": unroutable_max_retries,
-                }
-                logger.error(
-                    'No route for method "%(method)s" (id: %(correlation_id)s) '
-                    "after %(unroutable_max_retries)d attempts, rejecting",
-                    ctx,
-                    extra=ctx,
-                )
-                await msg.reject()
-                return
+        # 2. Execute handler
+        ctx = get_qanat_context()
+        ctx.route = route
+        ctx.max_attempts = self._get_max_retries(route) + 1
 
-            backoff = self._calculate_backoff(msg.delivery_count)
-            logger.warning(
-                "No route for method: %s, nacking with %.1fs delay",
-                msg.body.method,
-                backoff,
-            )
-            await msg.nack(backoff)
-            return
-
-        # 3. Execute handler
-        payload: Any = None
         handler_exc: Exception | None = None
+        result: Any = None
         try:
-            payload = await self._execute(route, msg.body.params)
+            result = await self._execute(route, msg.body.params)
+        except RetryMessage:
+            raise  # propagate RetryMessage without modification
         except Exception as exc:
             handler_exc = exc
 
-        # 4. Run after_process_message middleware hooks
-        for mw in self._middlewares:
-            try:
-                await mw.after_process_message(
-                    self,
-                    msg,
-                    result=payload,
-                    exception=handler_exc,
-                )
-            except Exception as exc:
-                logger.exception(
-                    "Middleware %s.after_process_message raised an error",
-                    type(mw).__name__,
-                    exc_info=exc,
-                )
-
-        # 5. Notification flow (no id → fire-and-forget)
-        if msg.correlation_id is None:
-            if handler_exc is not None:
-                total_attempts = self._get_max_retries(route) + 1
-
-                if msg.delivery_count >= total_attempts:
-                    self._log_retry_exhausted_error(
-                        msg, handler_exc, total_attempts
-                    )
-                    await msg.reject()
-                    return
-
-                backoff = self._calculate_backoff(msg.delivery_count)
-                self._log_retry_warning(
-                    msg, handler_exc, backoff, total_attempts
-                )
-                await msg.nack(backoff)
-                return
-
-            await msg.ack()
-            return
-
-        # 6. Request flow (has id → send response to reply_to)
+        # 3. Handle errors
         if handler_exc is not None:
-            total_attempts = self._get_max_retries(route) + 1
+            ctx = {
+                "error_type": type(handler_exc).__name__,
+                "error_msg": str(handler_exc),
+            }
 
-            if msg.delivery_count < total_attempts:
-                backoff = self._calculate_backoff(msg.delivery_count)
-                self._log_retry_warning(
-                    msg, handler_exc, backoff, total_attempts
+            if msg.delivery_count < ctx.max_attempts:
+                logger.warning(
+                    "Message processing failed. "
+                    "Reason: %(error_type)s(%(error_msg)r)",
+                    ctx,
+                    extra=ctx,
                 )
-                await msg.nack(backoff)
-                return
+                raise RetryMessage
 
-            self._log_retry_exhausted_error(msg, handler_exc, total_attempts)
+            logger.error(
+                "Message processing permanently "
+                "failed after %(max_attempts)d attempts",
+                extra=ctx,
+                exc_info=handler_exc,
+            )
+
+            if msg.correlation_id is None:
+                raise RejectMessage
 
             if not msg.reply_to:
-                self._log_acking_without_reply_info(msg)
-                await msg.ack()
-                return
+                logger.info(
+                    "Message has correlation id but no reply_to, "
+                    "rejecting without reply",
+                )
+                raise RejectMessage
 
-            response = JsonRpcResponse(
+            return JsonRpcResponse(
                 id=msg.correlation_id,
                 error=JsonRpcErrorDetail(
                     code=JsonRpcError.INTERNAL_ERROR,
                     message=str(handler_exc),
                 ),
             )
-        else:
+
+        # 4. Unwrap TaskResult
+        handler_headers: dict[str, str] | None = None
+        if isinstance(result, TaskResult):
+            handler_headers = result.headers
+            result = result.result
+
+        # 5. Build response for requests
+        if msg.correlation_id is not None:
             if not msg.reply_to:
-                self._log_acking_without_reply_info(msg)
-                await msg.ack()
-                return
-
-            response = JsonRpcResponse(id=msg.correlation_id, result=payload)
-
-        # 7. Run before_publish_response middleware hooks
-        out_headers: dict[str, str] = {}
-        for mw in self._middlewares:
-            try:
-                await mw.before_publish_response(
-                    self,
-                    msg,
-                    response,
-                    out_headers,
+                logger.info(
+                    "Message has correlation id but no reply_to, "
+                    "acking without reply",
                 )
-            except Exception as exc:
-                logger.exception(
-                    "Middleware %s.before_publish_response raised an error",
-                    type(mw).__name__,
-                    exc_info=exc,
-                )
+                return None
 
-        # 8. Publish response
-        try:
-            await self.broker.publish(
-                msg.reply_to,
-                response,
-                headers=out_headers or None,
+            response = JsonRpcResponse(
+                id=msg.correlation_id,
+                result=result,
             )
-        except Exception as exc:
-            backoff = self._calculate_backoff(msg.delivery_count)
-            logger.exception(
-                "Failed to publish response for %s, nacking with %.1fs delay",
-                msg.body.method,
-                backoff,
-                exc_info=exc,
+            if handler_headers:
+                response.headers.update(handler_headers)
+
+            return response
+
+        return None
+
+    async def _process_message(self, msg: BrokerMessage) -> None:
+        """Run the middleware pipeline and handle transport operations.
+
+        This method is purely transport logic: it runs the pipeline,
+        publishes responses, and translates control-flow exceptions
+        into broker ack/nack/reject calls.
+
+        Args:
+            msg: The incoming broker message.
+        """
+        ctx = get_qanat_context()
+        ctx.msg = msg
+        ctx.broker_latency = round(msg.received_at - msg.enqueued_at, 3)
+        ctx.internal_latency = round(time.time() - msg.received_at, 3)
+
+        try:
+            response = await self._pipeline(msg)
+
+            if (
+                response is not None
+                and msg.correlation_id is not None
+                and msg.reply_to
+            ):
+                outbound_headers = response.headers or None
+                try:
+                    await self.broker.publish(
+                        msg.reply_to,
+                        response,
+                        headers=outbound_headers,
+                    )
+                except Exception as exc:
+                    backoff = self._calculate_backoff(msg.delivery_count)
+                    logger.exception(
+                        "Failed to publish response, "
+                        f"nacking with {backoff:.1f} delay",
+                        extra={"delay_seconds": backoff},
+                        exc_info=exc,
+                    )
+                    await msg.nack(backoff)
+                    return
+
+            await msg.ack()
+
+        except RetryMessage as exc:
+            if (backoff := exc.delay) is None:
+                backoff = self._calculate_backoff(msg.delivery_count)
+
+            logger.info(
+                f"Retrying in {backoff:.1f} seconds. "
+                f"Attempt %(attempt)d/%(max_attempts)d",
+                extra={"delay_seconds": backoff},
             )
             await msg.nack(backoff)
-            return
 
-        await msg.ack()
+        except RejectMessage:
+            await msg.reject()
+
+        except Exception as exc:
+            logger.exception("Critical unhandled pipeline error", exc_info=exc)
+            await msg.reject()
 
     async def _guarded_process(
         self,

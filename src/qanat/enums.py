@@ -50,3 +50,6 @@ class JsonRpcError(IntEnum):
 
     INTERNAL_ERROR = -32603
     """Internal JSON-RPC error."""
+
+    DEADLINE_EXCEEDED = -32001
+    """Message deadline exceeded before processing could begin."""

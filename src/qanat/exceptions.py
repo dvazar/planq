@@ -1,16 +1,15 @@
 """Custom exceptions for the qanat package."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from qanat.types import Seconds
+
 
 class QanatError(Exception):
     """Base exception for all qanat errors."""
-
-
-class MessageExpired(QanatError):
-    """Raised when a message's TTL has been exceeded.
-
-    The consumer rejects the message without retrying when
-    ``time.time() > x-expire-at``.
-    """
 
 
 class MethodNotFound(QanatError):
@@ -65,3 +64,31 @@ class FeatureNotSupportedError(QanatError):
         )
         self.feature = feature
         self.provider = provider
+
+
+class RetryMessage(QanatError):
+    """Signal the transport layer to nack with a delay.
+
+    Raised when the message should be requeued for later processing.
+    """
+
+    def __init__(self, delay: Seconds | None) -> None:
+        """Initialize with the retry delay.
+
+        Args:
+            delay: Backoff delay in seconds before the message
+                becomes visible again.
+        """
+        if delay <= 0:
+            raise ValueError("delay must be positive")
+
+        self.delay = delay
+        super().__init__(f"Retry message in {delay:.1f} seconds")
+
+
+#: Alias for RetryMessage for more concise usage in handlers.
+Retry = RetryMessage
+
+
+class RejectMessage(QanatError):
+    """Signal the transport layer to permanently reject the message."""

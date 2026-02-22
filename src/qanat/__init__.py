@@ -20,6 +20,8 @@ JSON-RPC models:
 - :class:`~qanat.models.JsonRpcRequest`
 - :class:`~qanat.models.JsonRpcResponse`
 - :class:`~qanat.models.JsonRpcErrorDetail`
+- :class:`~qanat.models.TaskResult` — optional handler return wrapper
+  with transport headers.
 
 Enumerations:
 
@@ -29,45 +31,50 @@ Enumerations:
 
 Middleware:
 
-- :class:`~qanat.middleware.Middleware` — base class for lifecycle hooks.
-- :class:`~qanat.middleware.SkipMessage` — abort message processing.
-- :class:`~qanat.middleware.DeadlineMiddleware` — built-in deadline enforcement
-         with clock drift tolerance.
-"""
+- :class:`~qanat.middleware.Middleware` — base class for onion-style
+  middleware with a single ``__call__(msg, call_next)`` entry point.
+- :class:`~qanat.middleware.DeadlineMiddleware` — built-in deadline
+  enforcement with clock drift tolerance.
 
-import logging
+Control flow exceptions:
+
+- :class:`~qanat.exceptions.RetryMessage` — signal transport to nack.
+- :class:`~qanat.exceptions.RejectMessage` — signal transport to reject.
+"""
 
 from qanat.broker import BaseBroker
 from qanat.consumer import QanatConsumer
-from qanat.context import TaskContext, current_task_ctx, get_task_context
+from qanat.context import QanatContext, get_qanat_context
 from qanat.enums import ExecutionMode, Header, JsonRpcError
 from qanat.exceptions import (
     FeatureNotSupportedError,
     HandlerTimeout,
     ProcessShutdown,
+    RejectMessage,
+    Retry,
+    RetryMessage,
 )
+from qanat.log import instrument_logging
 from qanat.message import BrokerMessage
 from qanat.middleware import (
     DeadlineMiddleware,
     Middleware,
-    SkipMessage,
 )
 from qanat.models import (
     ConsumerSettings,
     JsonRpcErrorDetail,
     JsonRpcRequest,
     JsonRpcResponse,
+    TaskResult,
     TaskRoute,
 )
 
-# Prevent "No handlers found" warning if user doesn't configure logging
-logging.getLogger(__name__).addHandler(logging.NullHandler())
-
 __all__ = [
-    "QanatConsumer",
+    "Middleware",
     "BaseBroker",
     "BrokerMessage",
     "ConsumerSettings",
+    "DeadlineMiddleware",
     "ExecutionMode",
     "FeatureNotSupportedError",
     "HandlerTimeout",
@@ -76,12 +83,14 @@ __all__ = [
     "JsonRpcErrorDetail",
     "JsonRpcRequest",
     "JsonRpcResponse",
-    "Middleware",
     "ProcessShutdown",
-    "SkipMessage",
-    "TaskContext",
+    "QanatConsumer",
+    "RejectMessage",
+    "Retry",
+    "RetryMessage",
+    "QanatContext",
+    "TaskResult",
     "TaskRoute",
-    "DeadlineMiddleware",
-    "current_task_ctx",
-    "get_task_context",
+    "get_qanat_context",
+    "instrument_logging",
 ]
