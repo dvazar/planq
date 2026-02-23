@@ -172,3 +172,88 @@ def raw_messages(draw):
             st.integers(),
         )
     )
+
+
+# === Execution Mode Test Fixtures ===
+
+
+@pytest.fixture
+def thread_consumer():
+    """Consumer without process workers (THREAD/ASYNC only).
+
+    Process mode disabled by setting process_workers=None.
+    """
+    from unittest.mock import MagicMock
+
+    from qanat.consumer import QanatConsumer
+
+    broker = MagicMock()
+    return QanatConsumer(broker, process_workers=None, middlewares=[])
+
+
+@pytest.fixture
+def process_consumer():
+    """Consumer with process workers (all modes supported).
+
+    Yields consumer with 2 worker processes, ensures cleanup.
+    """
+    from unittest.mock import MagicMock
+
+    from qanat.consumer import QanatConsumer
+
+    broker = MagicMock()
+    consumer = QanatConsumer(broker, process_workers=2, middlewares=[])
+    yield consumer
+    # Critical: cleanup process pool to prevent resource leaks
+    if consumer._pool:
+        consumer._pool.shutdown(wait=True)
+
+
+@pytest.fixture
+def sync_handler():
+    """Synchronous handler for THREAD mode tests.
+
+    Returns a simple result without blocking.
+    """
+
+    def handler(*args, **kwargs):
+        return "sync result"
+
+    return handler
+
+
+@pytest.fixture
+def slow_sync_handler():
+    """Synchronous handler that sleeps for timeout tests.
+
+    Args:
+        duration: Sleep time in seconds (default 0.5s).
+    """
+    import time
+
+    def handler(duration=0.5):
+        time.sleep(duration)
+        return "slow result"
+
+    return handler
+
+
+@pytest.fixture
+def cancellation_aware_handler():
+    """Handler that checks ctx.is_cancelled periodically.
+
+    Returns "cancelled" if context is cancelled, "completed" otherwise.
+    """
+    import time
+
+    from qanat.context import get_qanat_context
+
+    def handler():
+        ctx = get_qanat_context()
+        for _ in range(10):
+            if ctx.is_cancelled:
+                return "cancelled"
+            time.sleep(0.1)
+        return "completed"
+
+    return handler
