@@ -7,16 +7,11 @@ from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
-from qanat import types as qanat_types
 from qanat.models import (
     JsonRpcErrorDetail,
     JsonRpcRequest,
     JsonRpcResponse,
 )
-
-# Rebuild the models with proper type namespace
-JsonRpcRequest.model_rebuild(_types_namespace=qanat_types.__dict__)
-JsonRpcResponse.model_rebuild(_types_namespace=qanat_types.__dict__)
 
 
 # === Layer 1: Parametrized Edge Cases ===

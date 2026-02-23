@@ -9,8 +9,6 @@ import time
 import pytest
 import pytest_asyncio
 
-from qanat import enums as qanat_enums
-from qanat import types as qanat_types
 from qanat.consumer import QanatConsumer
 from qanat.enums import ExecutionMode, JsonRpcError
 from qanat.exceptions import RejectMessage, RetryMessage
@@ -20,15 +18,8 @@ from qanat.models import (
     JsonRpcRequest,
     JsonRpcResponse,
     TaskResult,
-    TaskRoute,
 )
 from qanat.providers.sqs import SqsBroker
-
-# Rebuild models with proper type namespace
-JsonRpcRequest.model_rebuild(_types_namespace=qanat_types.__dict__)
-JsonRpcResponse.model_rebuild(_types_namespace=qanat_types.__dict__)
-TaskRoute.model_rebuild(_types_namespace=qanat_enums.__dict__)
-ConsumerSettings.model_rebuild()
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -320,7 +311,12 @@ async def test_consumer_retries_on_handler_failure(
     consumer = QanatConsumer(sqs_broker)
     attempts = []
 
-    @consumer.task("task.flaky", mode=ExecutionMode.ASYNC, max_retries=2)
+    @consumer.task(
+        "task.flaky",
+        mode=ExecutionMode.ASYNC,
+        max_retries=2,
+        retry_on=Exception,
+    )
     async def flaky_handler(value: int) -> int:
         attempts.append(1)
         if len(attempts) < 2:
@@ -364,7 +360,11 @@ async def test_consumer_returns_error_when_retries_exhausted(
     settings = ConsumerSettings(max_retries=1)
     consumer = QanatConsumer(sqs_broker, settings=settings)
 
-    @consumer.task("task.always_fails", mode=ExecutionMode.ASYNC)
+    @consumer.task(
+        "task.always_fails",
+        mode=ExecutionMode.ASYNC,
+        retry_on=Exception,
+    )
     async def always_fails() -> None:
         raise ValueError("Permanent failure")
 

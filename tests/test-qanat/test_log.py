@@ -7,19 +7,11 @@ from typing import override
 
 import pytest
 
-from qanat import types as qanat_types
 from qanat.context import QanatContextFilter, get_qanat_context
 from qanat.enums import ExecutionMode
 from qanat.log import instrument_logging, logger
 from qanat.message import BrokerMessage
 from qanat.models import JsonRpcRequest, TaskRoute
-
-# Rebuild models
-JsonRpcRequest.model_rebuild(_types_namespace=qanat_types.__dict__)
-TaskRoute.model_rebuild(
-    _types_namespace={**qanat_types.__dict__, "ExecutionMode": ExecutionMode}
-)
-
 
 # === Test Helper ===
 

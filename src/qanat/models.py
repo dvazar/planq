@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-if TYPE_CHECKING:
-    from qanat.enums import ExecutionMode
-    from qanat.types import JsonRpcId, JsonRpcParams, JsonRpcVersion
+from qanat.enums import ExecutionMode
+from qanat.types import (
+    JsonRpcId,
+    JsonRpcParams,
+    JsonRpcVersion,
+    RetryCondition,
+)
 
 
 class ConsumerSettings(BaseModel):
@@ -82,6 +86,9 @@ class TaskRoute(BaseModel):
             None means unlimited.
         grace_period: Seconds after SIGALRM before SIGKILL in PROCESS mode.
             None defers to ConsumerSettings.process_timeout_grace_period.
+        max_retries: Maximum delivery attempts for this handler.
+        retry_on: Exception types or predicates that trigger retries.
+            None means no retries (breaking change from previous behavior).
     """
 
     model_config = ConfigDict(
@@ -94,11 +101,6 @@ class TaskRoute(BaseModel):
     # Execution strategy.
     mode: ExecutionMode
 
-    # Maximum delivery attempts for this handler.
-    # None defers to ConsumerSettings.max_retries or DEFAULT_MAX_RETRIES.
-    # Zero means one attempt (initial delivery only, no retries).
-    max_retries: int | None = None
-
     # Maximum allowed execution time in seconds.
     # None means unlimited.
     time_limit: float | None = None
@@ -106,6 +108,20 @@ class TaskRoute(BaseModel):
     # Grace period override for PROCESS mode timeout handling.
     # None uses ConsumerSettings.process_timeout_grace_period.
     grace_period: float | None = None
+
+    # Maximum delivery attempts for this handler.
+    # None defers to ConsumerSettings.max_retries or DEFAULT_MAX_RETRIES.
+    # Zero means one attempt (initial delivery only, no retries).
+    max_retries: int | None = None
+
+    # Exception types or predicates that enable retries.
+    # None means do NOT retry any exceptions.
+    retry_on: (
+        RetryCondition
+        | list[RetryCondition]
+        | tuple[RetryCondition, ...]
+        | None
+    ) = None
 
     @field_validator("max_retries")
     @classmethod

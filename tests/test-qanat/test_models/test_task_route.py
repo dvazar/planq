@@ -7,7 +7,6 @@ from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
-from qanat import enums as qanat_enums
 from qanat.enums import ExecutionMode
 from qanat.models import TaskRoute
 
@@ -16,9 +15,6 @@ from .conftest import (
     invalid_max_retries,
     valid_task_route_kwargs,
 )
-
-# Rebuild the model with proper type namespace
-TaskRoute.model_rebuild(_types_namespace=qanat_enums.__dict__)
 
 
 # === Layer 1: Parametrized Edge Cases ===

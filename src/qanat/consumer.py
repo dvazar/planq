@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 
     from qanat.broker import BaseBroker
     from qanat.message import BrokerMessage
-    from qanat.types import Seconds
+    from qanat.types import RetryCondition, Seconds
 
     type CallNext = Callable[[BrokerMessage], Awaitable[JsonRpcResponse | None]]
 
@@ -57,6 +57,45 @@ def _sigalrm_handler(signum: int, frame: object) -> None:
 
 def _sigterm_handler(signum: int, frame: object) -> None:
     raise ProcessShutdown()
+
+
+def should_retry(
+    exc: Exception,
+    retry_on: (
+        RetryCondition | list[RetryCondition] | tuple[RetryCondition, ...]
+    ),
+) -> bool:
+    """Check if exception matches any retry condition.
+
+    Args:
+        exc: The exception that was raised.
+        retry_on: Single condition or list of conditions to check.
+
+    Returns:
+        True if exception matches any condition, False otherwise.
+    """
+    if isinstance(retry_on, (list, tuple)):
+        conditions = retry_on
+    else:
+        conditions = (retry_on,)
+
+    for condition in conditions:
+        if isinstance(condition, type) and issubclass(condition, Exception):
+            if isinstance(exc, condition):
+                return True
+
+        elif callable(condition):
+            try:
+                if condition(exc):
+                    return True
+            except Exception as predicate_exc:
+                logger.error(
+                    f"Error evaluating retry predicate: {predicate_exc}",
+                    exc_info=predicate_exc,
+                )
+                return False
+
+    return False
 
 
 def _worker_main(
@@ -245,9 +284,15 @@ class QanatConsumer:
         name: str,
         mode: ExecutionMode = ExecutionMode.ASYNC,
         *,
-        max_retries: int | None = None,
         time_limit: float | None = None,
         grace_period: float | None = None,
+        max_retries: int | None = None,
+        retry_on: (
+            RetryCondition
+            | list[RetryCondition]
+            | tuple[RetryCondition, ...]
+            | None
+        ) = None,
     ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Register a callable as the handler for a named JSON-RPC method.
 
@@ -262,18 +307,26 @@ class QanatConsumer:
             name: JSON-RPC method name that routes to this handler.
             mode: Execution strategy for the handler. Defaults to
                 ``ExecutionMode.ASYNC``.
-            max_retries: Maximum number of retry attempts for this handler.
-                Must be non-negative. Zero means no retries (a single attempt
-                only), useful for idempotent operations that should fail fast.
-                ``None`` defers to
-                :attr:`~qanat.models.ConsumerSettings.max_retries`
-                or ``DEFAULT_MAX_RETRIES`` (3).
             time_limit: Maximum wall-clock seconds the handler may run.
                 ``None`` means no limit. On expiry, raises
                 :exc:`~qanat.exceptions.HandlerTimeout`.
             grace_period: Seconds between SIGALRM and SIGKILL for
                 ``ExecutionMode.PROCESS`` handlers. ``None`` defers to
                 :attr:`~qanat.models.ConsumerSettings.process_timeout_grace_period`.
+            max_retries: Maximum number of retry attempts for this handler.
+                Must be non-negative. Zero means no retries (a single attempt
+                only), useful for idempotent operations that should fail fast.
+                ``None`` defers to
+                :attr:`~qanat.models.ConsumerSettings.max_retries`
+                or ``DEFAULT_MAX_RETRIES`` (3).
+            retry_on: Exception types or predicates that enable retries.
+                - None (default): Do NOT retry any exceptions.
+                - Single type: retry_on=ValueError
+                - Multiple types: retry_on=[ValueError, KeyError]
+                - Callable: retry_on=lambda exc: "temporary" in str(exc)
+                - Mixed: retry_on=[ValueError, lambda exc: ...]
+                If exception doesn't match any condition, message is rejected
+                immediately without counting toward max_retries.
 
         Returns:
             A decorator that registers the wrapped function and returns
@@ -288,9 +341,10 @@ class QanatConsumer:
             self.routes[name] = TaskRoute(
                 handler=func,
                 mode=mode,
-                max_retries=max_retries,
                 time_limit=time_limit,
                 grace_period=grace_period,
+                max_retries=max_retries,
+                retry_on=retry_on,
             )
             return func
 
@@ -481,6 +535,19 @@ class QanatConsumer:
                 "error_msg": str(handler_exc),
             }
 
+            if (
+                route.retry_on is None
+                or should_retry(handler_exc, route.retry_on) is False
+            ):
+                logger.error(
+                    "Message processing failed. "
+                    "Reason: %(error_type)s(%(error_msg)r)",
+                    log_ctx,
+                    extra=log_ctx,
+                    exc_info=handler_exc,
+                )
+                raise RejectMessage
+
             if msg.delivery_count < ctx.max_attempts:
                 logger.warning(
                     "Message processing failed. "
@@ -593,11 +660,11 @@ class QanatConsumer:
             await msg.nack(backoff)
 
         except RejectMessage:
-            await msg.reject()
+            await msg.reject()  # todo: + move to DLQ
 
         except Exception as exc:
             logger.exception("Critical unhandled pipeline error", exc_info=exc)
-            await msg.reject()
+            await msg.reject()  # todo: + move to DLQ
 
     async def _guarded_process(
         self,

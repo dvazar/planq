@@ -9,15 +9,10 @@ import time
 import pytest
 import pytest_asyncio
 
-from qanat import types as qanat_types
 from qanat.enums import Header
 from qanat.message import BrokerMessage
 from qanat.models import JsonRpcRequest, JsonRpcResponse
 from qanat.providers.sqs import SqsBroker
-
-# Rebuild models with proper type namespace
-JsonRpcRequest.model_rebuild(_types_namespace=qanat_types.__dict__)
-JsonRpcResponse.model_rebuild(_types_namespace=qanat_types.__dict__)
 
 
 async def consume_one(

@@ -6,12 +6,8 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from qanat import types as qanat_types
 from qanat.message import BrokerMessage
 from qanat.models import JsonRpcRequest
-
-# Rebuild JsonRpcRequest with proper type namespace
-JsonRpcRequest.model_rebuild(_types_namespace=qanat_types.__dict__)
 
 
 # Helper function for creating BrokerMessage (used by hypothesis tests)

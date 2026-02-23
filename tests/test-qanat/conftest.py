@@ -6,15 +6,11 @@ import pytest
 from hypothesis import settings
 from hypothesis import strategies as st
 
-from qanat import types as qanat_types
 from qanat.models import JsonRpcRequest
 
 # Configure hypothesis for consistent test behavior
 settings.register_profile("default", max_examples=100, deadline=1000)
 settings.load_profile("default")
-
-# Rebuild JsonRpcRequest with proper type namespace
-JsonRpcRequest.model_rebuild(_types_namespace=qanat_types.__dict__)
 
 
 # === JsonRpcRequest Fixtures ===

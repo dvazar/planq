@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import ValidationError
 
-from qanat import types as qanat_types
-from qanat.consumer import DEFAULT_MAX_RETRIES, QanatConsumer
+from qanat.consumer import DEFAULT_MAX_RETRIES, QanatConsumer, should_retry
 from qanat.enums import ExecutionMode, JsonRpcError
 from qanat.exceptions import RejectMessage, RetryMessage
 from qanat.message import BrokerMessage
@@ -18,18 +17,9 @@ from qanat.middleware import DeadlineMiddleware, Middleware
 from qanat.models import (
     ConsumerSettings,
     JsonRpcRequest,
-    JsonRpcResponse,
     TaskResult,
     TaskRoute,
 )
-
-# Rebuild models with proper type namespace
-JsonRpcRequest.model_rebuild(_types_namespace=qanat_types.__dict__)
-JsonRpcResponse.model_rebuild(_types_namespace=qanat_types.__dict__)
-TaskRoute.model_rebuild(
-    _types_namespace={**qanat_types.__dict__, "ExecutionMode": ExecutionMode}
-)
-
 
 # === Fixtures ===
 
@@ -422,7 +412,12 @@ class TestErrorHandling:
         broker = MagicMock()
         consumer = QanatConsumer(broker, middlewares=[])
 
-        @consumer.task("test.error", mode=ExecutionMode.ASYNC, max_retries=3)
+        @consumer.task(
+            "test.error",
+            mode=ExecutionMode.ASYNC,
+            max_retries=3,
+            retry_on=Exception,
+        )
         async def handler():
             raise ValueError("something went wrong")
 
@@ -440,7 +435,10 @@ class TestErrorHandling:
         consumer = QanatConsumer(broker, middlewares=[])
 
         @consumer.task(
-            "test.exhausted", mode=ExecutionMode.ASYNC, max_retries=2
+            "test.exhausted",
+            mode=ExecutionMode.ASYNC,
+            max_retries=2,
+            retry_on=Exception,
         )
         async def handler():
             raise ValueError("permanent failure")
@@ -465,6 +463,7 @@ class TestErrorHandling:
             mode=ExecutionMode.ASYNC,
             max_retries=3,
             time_limit=0.01,
+            retry_on=Exception,
         )
         async def handler():
             await asyncio.sleep(1.0)  # Exceeds time_limit
@@ -620,7 +619,12 @@ class TestTransportIntegration:
         broker = AsyncMock()
         consumer = QanatConsumer(broker, middlewares=[])
 
-        @consumer.task("test.nack", mode=ExecutionMode.ASYNC, max_retries=3)
+        @consumer.task(
+            "test.nack",
+            mode=ExecutionMode.ASYNC,
+            max_retries=3,
+            retry_on=Exception,
+        )
         async def handler():
             raise ValueError("retry me")
 
@@ -756,3 +760,318 @@ class TestContextPopulation:
         await consumer._process_message(msg)
 
         assert captured_max_attempts == 4  # 3 retries + 1 attempt
+
+
+# === Layer 8: Conditional Retry (retry_on) ===
+
+
+class TestShouldRetryHelper:
+    """Tests for should_retry() helper function."""
+
+    def test_single_exception_type_match(self):
+        """Single exception type matches correctly."""
+        exc = ValueError("test error")
+        result = should_retry(exc, ValueError)
+        assert result is True
+
+    def test_single_exception_type_non_match(self):
+        """Single exception type returns False when no match."""
+        exc = ValueError("test error")
+        result = should_retry(exc, KeyError)
+        assert result is False
+
+    def test_list_of_types_first_matches(self):
+        """List of types matches first exception type."""
+        exc = ValueError("test error")
+        result = should_retry(exc, [ValueError, KeyError, TypeError])
+        assert result is True
+
+    def test_list_of_types_last_matches(self):
+        """List of types matches last exception type."""
+        exc = TypeError("test error")
+        result = should_retry(exc, [ValueError, KeyError, TypeError])
+        assert result is True
+
+    def test_list_of_types_none_match(self):
+        """List of types returns False when none match."""
+        exc = RuntimeError("test error")
+        result = should_retry(exc, [ValueError, KeyError, TypeError])
+        assert result is False
+
+    def test_single_callable_returns_true(self):
+        """Single callable predicate returns True."""
+        exc = ValueError("retry this")
+        result = should_retry(exc, lambda e: "retry" in str(e))
+        assert result is True
+
+    def test_single_callable_returns_false(self):
+        """Single callable predicate returns False."""
+        exc = ValueError("no match")
+        result = should_retry(exc, lambda e: "retry" in str(e))
+        assert result is False
+
+    def test_callable_raises_exception_logs_and_returns_false(self):
+        """Callable that raises exception logs and returns False."""
+        exc = ValueError("test error")
+
+        def broken_predicate(e):
+            raise RuntimeError("predicate error")
+
+        with patch("qanat.consumer.logger") as mock_logger:
+            result = should_retry(exc, broken_predicate)
+
+        assert result is False
+        mock_logger.error.assert_called_once()
+        # Verify exc_info was passed
+        assert mock_logger.error.call_args[1]["exc_info"] is not None
+
+    def test_mixed_list_type_matches(self):
+        """Mixed list [ValueError, callable] - type matches."""
+        exc = ValueError("test error")
+        result = should_retry(exc, [ValueError, lambda e: "retry" in str(e)])
+        assert result is True
+
+    def test_mixed_list_callable_matches(self):
+        """Mixed list [ValueError, callable] - callable matches."""
+        exc = KeyError("retry this")
+        result = should_retry(exc, [ValueError, lambda e: "retry" in str(e)])
+        assert result is True
+
+    def test_subclass_matching(self):
+        """Exception subclass matches parent type in retry_on."""
+
+        class CustomError(ValueError):
+            pass
+
+        exc = CustomError("test error")
+        result = should_retry(exc, ValueError)
+        assert result is True
+
+
+class TestTaskRouteRetryOn:
+    """Tests for TaskRoute retry_on field."""
+
+    def test_retry_on_accepts_single_type(self):
+        """retry_on accepts a single exception type."""
+        route = TaskRoute(
+            handler=lambda: None,
+            mode=ExecutionMode.ASYNC,
+            retry_on=ValueError,
+        )
+        assert route.retry_on is ValueError
+
+    def test_retry_on_accepts_list_of_types(self):
+        """retry_on accepts a list of exception types."""
+        route = TaskRoute(
+            handler=lambda: None,
+            mode=ExecutionMode.ASYNC,
+            retry_on=[ValueError, KeyError],
+        )
+        assert route.retry_on == [ValueError, KeyError]
+
+    def test_retry_on_accepts_callable(self):
+        """retry_on accepts a callable predicate."""
+        predicate = lambda exc: True
+        route = TaskRoute(
+            handler=lambda: None,
+            mode=ExecutionMode.ASYNC,
+            retry_on=predicate,
+        )
+        assert route.retry_on is predicate
+
+    def test_retry_on_accepts_none(self):
+        """retry_on accepts None (no retries)."""
+        route = TaskRoute(
+            handler=lambda: None,
+            mode=ExecutionMode.ASYNC,
+            retry_on=None,
+        )
+        assert route.retry_on is None
+
+    def test_task_decorator_stores_retry_on(self):
+        """@consumer.task() stores retry_on parameter."""
+        broker = MagicMock()
+        consumer = QanatConsumer(broker)
+
+        @consumer.task("test.retry_on", retry_on=ValueError)
+        async def handler():
+            pass
+
+        assert consumer.routes["test.retry_on"].retry_on is ValueError
+
+
+class TestRouterEndpointRetryOn:
+    """Tests for _router_endpoint() retry_on integration."""
+
+    @pytest.mark.asyncio
+    async def test_retry_on_none_rejects_immediately(self, mock_message):
+        """retry_on=None means no retries, reject immediately."""
+        broker = MagicMock()
+        consumer = QanatConsumer(broker, middlewares=[])
+
+        @consumer.task(
+            "test.no_retry",
+            mode=ExecutionMode.ASYNC,
+            max_retries=3,
+            retry_on=None,
+        )
+        async def handler():
+            raise ValueError("will not retry")
+
+        msg = mock_message(method="test.no_retry", id=None, delivery_count=1)
+
+        with pytest.raises(RejectMessage):
+            await consumer._router_endpoint(msg)
+
+    @pytest.mark.asyncio
+    async def test_retry_on_matches_exception_retries(self, mock_message):
+        """retry_on=ValueError matches ValueError, retries."""
+        broker = MagicMock()
+        consumer = QanatConsumer(broker, middlewares=[])
+
+        @consumer.task(
+            "test.match_retry",
+            mode=ExecutionMode.ASYNC,
+            max_retries=3,
+            retry_on=ValueError,
+        )
+        async def handler():
+            raise ValueError("will retry")
+
+        msg = mock_message(method="test.match_retry", id=None, delivery_count=1)
+
+        with pytest.raises(RetryMessage):
+            await consumer._router_endpoint(msg)
+
+    @pytest.mark.asyncio
+    async def test_retry_on_does_not_match_rejects(self, mock_message):
+        """retry_on=ValueError doesn't match KeyError, rejects."""
+        broker = MagicMock()
+        consumer = QanatConsumer(broker, middlewares=[])
+
+        @consumer.task(
+            "test.no_match",
+            mode=ExecutionMode.ASYNC,
+            max_retries=3,
+            retry_on=ValueError,
+        )
+        async def handler():
+            raise KeyError("will not retry")
+
+        msg = mock_message(method="test.no_match", id=None, delivery_count=1)
+
+        with pytest.raises(RejectMessage):
+            await consumer._router_endpoint(msg)
+
+    @pytest.mark.asyncio
+    async def test_retry_on_matches_but_max_retries_exhausted(
+        self, mock_message
+    ):
+        """retry_on matches but max_retries exhausted returns error."""
+        broker = MagicMock()
+        consumer = QanatConsumer(broker, middlewares=[])
+
+        @consumer.task(
+            "test.exhausted",
+            mode=ExecutionMode.ASYNC,
+            max_retries=2,
+            retry_on=ValueError,
+        )
+        async def handler():
+            raise ValueError("permanent failure")
+
+        msg = mock_message(method="test.exhausted", id="123", delivery_count=3)
+
+        response = await consumer._router_endpoint(msg)
+
+        assert response.id == "123"
+        assert response.error is not None
+        assert response.error.code == JsonRpcError.INTERNAL_ERROR
+        assert "permanent failure" in response.error.message
+
+    @pytest.mark.asyncio
+    async def test_explicit_retry_message_bypasses_retry_on(self, mock_message):
+        """Handler can raise RetryMessage to bypass retry_on check."""
+        broker = MagicMock()
+        consumer = QanatConsumer(broker, middlewares=[])
+
+        @consumer.task(
+            "test.explicit_retry",
+            mode=ExecutionMode.ASYNC,
+            retry_on=None,  # No retries
+        )
+        async def handler():
+            raise RetryMessage(delay=5.0)
+
+        msg = mock_message(
+            method="test.explicit_retry", id=None, delivery_count=1
+        )
+
+        with pytest.raises(RetryMessage) as exc_info:
+            await consumer._router_endpoint(msg)
+
+        assert exc_info.value.delay == 5.0
+
+    @pytest.mark.asyncio
+    async def test_retry_on_callable_true_retries(self, mock_message):
+        """retry_on callable returning True retries."""
+        broker = MagicMock()
+        consumer = QanatConsumer(broker, middlewares=[])
+
+        @consumer.task(
+            "test.callable_true",
+            mode=ExecutionMode.ASYNC,
+            max_retries=3,
+            retry_on=lambda exc: "retry" in str(exc).lower(),
+        )
+        async def handler():
+            raise ValueError("Please RETRY this")
+
+        msg = mock_message(
+            method="test.callable_true", id=None, delivery_count=1
+        )
+
+        with pytest.raises(RetryMessage):
+            await consumer._router_endpoint(msg)
+
+    @pytest.mark.asyncio
+    async def test_retry_on_callable_false_rejects(self, mock_message):
+        """retry_on callable returning False rejects."""
+        broker = MagicMock()
+        consumer = QanatConsumer(broker, middlewares=[])
+
+        @consumer.task(
+            "test.callable_false",
+            mode=ExecutionMode.ASYNC,
+            max_retries=3,
+            retry_on=lambda exc: "retry" in str(exc).lower(),
+        )
+        async def handler():
+            raise ValueError("Will not match")
+
+        msg = mock_message(
+            method="test.callable_false", id=None, delivery_count=1
+        )
+
+        with pytest.raises(RejectMessage):
+            await consumer._router_endpoint(msg)
+
+    @pytest.mark.asyncio
+    async def test_retry_on_list_with_multiple_types(self, mock_message):
+        """retry_on list matches any exception type in list."""
+        broker = MagicMock()
+        consumer = QanatConsumer(broker, middlewares=[])
+
+        @consumer.task(
+            "test.multi_types",
+            mode=ExecutionMode.ASYNC,
+            max_retries=3,
+            retry_on=[ValueError, KeyError, TypeError],
+        )
+        async def handler():
+            raise KeyError("will retry")
+
+        msg = mock_message(method="test.multi_types", id=None, delivery_count=1)
+
+        with pytest.raises(RetryMessage):
+            await consumer._router_endpoint(msg)

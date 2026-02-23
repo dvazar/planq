@@ -8,13 +8,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from qanat import types as qanat_types
 from qanat.broker import BaseBroker
-from qanat.models import JsonRpcRequest
-
-# Rebuild JsonRpcRequest with proper type namespace
-JsonRpcRequest.model_rebuild(_types_namespace=qanat_types.__dict__)
-
 
 # === Test Implementation Classes ===
 
