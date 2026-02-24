@@ -1,9 +1,9 @@
-test-qanat:
-	uv run pytest tests/test-qanat/
+test-planq:
+	uv run pytest tests/test-planq/
 
-test-qanat-with-cov:
-	uv run pytest tests/test-qanat/ \
-      --cov=qanat \
+test-planq-with-cov:
+	uv run pytest tests/test-planq/ \
+      --cov=planq \
       --cov-report=html \
       --cov-report=term-missing \
       --cov-branch
