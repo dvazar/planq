@@ -1,6 +1,6 @@
 
 <br/>
-<img alt="planq-logo" src="docs/images/logo.svg" style="display: block; width:100%; max-height:200px; height:auto; margin-left: auto; margin-right: auto;" />
+<img alt="planq-logo" src="docs/images/logo.svg" style="display: block; width:100%; max-height:150px; height:auto; margin-left: auto; margin-right: auto;" />
 
 ---
 
