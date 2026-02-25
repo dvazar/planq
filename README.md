@@ -1,4 +1,10 @@
-<img alt="planq-logo" src="docs/images/logo.svg" style="display: block; width:100%; height:150px; margin-left: auto; margin-right: auto;" />
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./docs/images/logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./docs/images/logo-light.svg">
+    <img alt="PlanQ Logo" src="./docs/images/logo-light.svg" width="400px">
+  </picture>
+</p>
 
 ---
 
