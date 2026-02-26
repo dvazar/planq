@@ -65,11 +65,6 @@ class TestRetryMessageConstruction:
         exc = RetryMessage(delay=0.5)
         assert exc.delay == 0.5
 
-    def test_retry_message_str_mentions_retry(self):
-        """RetryMessage string mentions retry."""
-        exc = RetryMessage(delay=3.0)
-        assert "retry" in str(exc).lower() or "Retry" in str(exc)
-
     def test_multiple_instances_are_independent(self):
         """Multiple RetryMessage instances have independent delays."""
         exc1 = RetryMessage(delay=1.0)

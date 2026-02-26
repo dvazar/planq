@@ -120,7 +120,7 @@ async def test_publish_and_consume(sqs_broker, test_queue_url):
     assert msg is not None
     assert msg.body.method == "test.method"
     assert msg.body.params == {"key": "value"}
-    assert msg.broker_message_id == message_id
+    assert msg.message_id == message_id
     await msg.ack()
 
 

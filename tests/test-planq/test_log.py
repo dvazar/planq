@@ -27,11 +27,11 @@ class _TestBrokerMessage(BrokerMessage):
 
     @property
     @override
-    def broker_message_id(self) -> str:
+    def message_id(self) -> str:
         return self._broker_message_id
 
-    @broker_message_id.setter
-    def broker_message_id(self, value: str):
+    @message_id.setter
+    def message_id(self, value: str):
         self._broker_message_id = value
 
     @property
@@ -136,7 +136,7 @@ class TestInstrumentLogging:
 
         # Set up context
         ctx = get_planq_context()
-        ctx.broker_message_id = "test-msg-123"
+        ctx.message_id = "test-msg-123"
 
         # Create a log record
         with caplog.at_level(logging.INFO):
@@ -144,9 +144,9 @@ class TestInstrumentLogging:
 
         # Verify record has context attribute (will use default_value)
         record = caplog.records[0]
-        # The filter will set broker_message_id based on ctx.msg, which is
+        # The filter will set message_id based on ctx.msg, which is
         # None, so it should use default_value
-        assert hasattr(record, "broker_message_id")
+        assert hasattr(record, "message_id")
 
     def test_custom_default_value_is_respected(self):
         """instrument_logging() uses custom default_value."""
@@ -170,7 +170,7 @@ class TestInstrumentLogging:
         )
 
         # All context fields should use the custom default
-        assert new_record.broker_message_id == "CUSTOM"
+        assert new_record.message_id == "CUSTOM"
         assert new_record.queue_name == "CUSTOM"
         assert new_record.method == "CUSTOM"
 
@@ -191,7 +191,7 @@ class TestInstrumentLogging:
         # Both records should have context fields
         assert len(caplog.records) >= 2
         for record in caplog.records:
-            assert hasattr(record, "broker_message_id")
+            assert hasattr(record, "message_id")
             assert hasattr(record, "queue_name")
 
 
@@ -222,7 +222,7 @@ class TestLoggingIntegration:
             None,
         )
 
-        assert record.broker_message_id == "OUTSIDE"
+        assert record.message_id == "OUTSIDE"
         assert record.queue_name == "OUTSIDE"
         assert record.method == "OUTSIDE"
         assert record.handler == "OUTSIDE"
@@ -243,7 +243,7 @@ class TestLoggingIntegration:
             received_at=1234567890.0,
             queue_name="real-queue",
         )
-        msg.broker_message_id = "real-msg-id"
+        msg.message_id = "real-msg-id"
         msg.delivery_count = 3
 
         def test_handler():
@@ -277,7 +277,7 @@ class TestLoggingIntegration:
 
         # Verify real values are used
         assert record.queue_name == "real-queue"
-        assert record.broker_message_id == "real-msg-id"
+        assert record.message_id == "real-msg-id"
         assert record.method == "test.method"
         assert record.correlation_id == "req-123"
         assert record.attempt == 3
@@ -295,7 +295,7 @@ class TestLoggingIntegration:
         # Verify all expected fields exist
         expected_fields = [
             "queue_name",
-            "broker_message_id",
+            "message_id",
             "correlation_id",
             "method",
             "attempt",
@@ -338,5 +338,5 @@ class TestLoggingIntegration:
         )
 
         assert record.levelname == level_name
-        assert hasattr(record, "broker_message_id")
-        assert record.broker_message_id == "LEVEL"
+        assert hasattr(record, "message_id")
+        assert record.message_id == "LEVEL"

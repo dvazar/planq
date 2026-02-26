@@ -134,6 +134,7 @@ class BaseBroker:
 
     async def on_poison_message(
         self,
+        message_id: str,
         raw_body: str | bytes,
         queue: str,
         error: Exception,
@@ -145,6 +146,7 @@ class BaseBroker:
         queue or alert system.
 
         Args:
+            message_id: Message identifier.
             raw_body: The raw string body of the unprocessable message.
             queue: The queue from which the message was consumed.
             error: The exception raised during parsing.
@@ -159,14 +161,15 @@ class BaseBroker:
             safe_body += f"... [truncated, total size: {body_size} bytes]"
 
         ctx = {
+            "message_id": message_id,
             "queue_name": self.get_queue_name(queue),
             "body_size": body_size,
             "is_truncated": is_truncated,
             "raw_body_snippet": safe_body,
         }
         logger.error(
-            'Poison message detected in queue "%(queue_name)s": '
-            "failed to parse body",
+            "Poison message detected in queue '%(queue_name)s': "
+            "failed to parse body. Message ID: %(message_id)s.",
             ctx,
             extra=ctx,
             exc_info=error,

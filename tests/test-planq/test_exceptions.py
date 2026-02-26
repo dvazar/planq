@@ -7,9 +7,11 @@ import pytest
 from planq.exceptions import (
     FeatureNotSupportedError,
     HandlerTimeout,
+    MaxRetriesExceeded,
     MethodNotFound,
-    ProcessShutdown,
     PlanqError,
+    ProcessShutdown,
+    RejectMessage,
 )
 
 # === Layer 1: Exception Hierarchy ===
@@ -76,6 +78,42 @@ class TestPlanqError:
         assert str(exc) == ""
 
 
+class TestRejectMessage:
+    """Test RejectMessage exception."""
+
+    def test_reject_message_inherits_from_planq_error(self):
+        """RejectMessage is a subclass of PlanqError."""
+        assert issubclass(RejectMessage, PlanqError)
+
+    def test_can_raise_reject_message(self):
+        """RejectMessage can be raised."""
+        with pytest.raises(RejectMessage):
+            raise RejectMessage("test rejection")
+
+    def test_can_catch_reject_message(self):
+        """RejectMessage can be caught."""
+        try:
+            raise RejectMessage("test rejection")
+        except RejectMessage as exc:
+            assert str(exc) == "test rejection"
+
+    def test_can_catch_as_planq_error(self):
+        """RejectMessage can be caught as PlanqError."""
+        try:
+            raise RejectMessage("test rejection")
+        except PlanqError as exc:
+            assert isinstance(exc, RejectMessage)
+            assert str(exc) == "test rejection"
+
+    def test_can_catch_as_exception(self):
+        """RejectMessage can be caught as Exception."""
+        try:
+            raise RejectMessage("test rejection")
+        except Exception as exc:
+            assert isinstance(exc, RejectMessage)
+            assert str(exc) == "test rejection"
+
+
 # === Layer 3: Simple Exceptions ===
 
 
@@ -85,26 +123,33 @@ class TestMethodNotFound:
     def test_can_raise_method_not_found(self):
         """MethodNotFound can be raised."""
         with pytest.raises(MethodNotFound):
-            raise MethodNotFound("handler not registered")
+            raise MethodNotFound("order.payment.process")
 
     def test_can_catch_method_not_found(self):
         """MethodNotFound can be caught."""
         try:
-            raise MethodNotFound("handler not registered")
+            raise MethodNotFound("order.payment.process")
         except MethodNotFound as exc:
-            assert str(exc) == "handler not registered"
+            assert (
+                str(exc)
+                == "No registered handler for method 'order.payment.process'"
+            )
+
+    def test_method_not_found_inherits_from_reject_message(self):
+        """MethodNotFound is a subclass of RejectMessage."""
+        assert issubclass(MethodNotFound, RejectMessage)
 
     def test_can_catch_as_planq_error(self):
         """MethodNotFound can be caught as PlanqError."""
         try:
-            raise MethodNotFound("handler not registered")
+            raise MethodNotFound("order.payment.process")
         except PlanqError as exc:
             assert isinstance(exc, MethodNotFound)
 
     def test_can_catch_as_exception(self):
         """MethodNotFound can be caught as Exception."""
         try:
-            raise MethodNotFound("handler not registered")
+            raise MethodNotFound("order.payment.process")
         except Exception as exc:
             assert isinstance(exc, MethodNotFound)
 
@@ -175,6 +220,101 @@ class TestHandlerTimeout:
         exc = HandlerTimeout(0.0)
         assert exc.time_limit == 0.0
         assert str(exc) == "Handler exceeded time limit of 0.0s."
+
+
+class TestMaxRetriesExceeded:
+    """Test MaxRetriesExceeded exception."""
+
+    def test_max_retries_exceeded_inherits_from_reject_message(self):
+        """MaxRetriesExceeded is a subclass of RejectMessage."""
+        assert issubclass(MaxRetriesExceeded, RejectMessage)
+
+    def test_max_retries_exceeded_inherits_from_planq_error(self):
+        """MaxRetriesExceeded is a subclass of PlanqError (via RejectMessage)."""
+        assert issubclass(MaxRetriesExceeded, PlanqError)
+
+    def test_can_raise_max_retries_exceeded(self):
+        """MaxRetriesExceeded can be raised."""
+        with pytest.raises(MaxRetriesExceeded):
+            raise MaxRetriesExceeded(3, "process_payment")
+
+    def test_can_catch_max_retries_exceeded(self):
+        """MaxRetriesExceeded can be caught."""
+        try:
+            raise MaxRetriesExceeded(3, "process_payment")
+        except MaxRetriesExceeded as exc:
+            assert exc.max_attempts == 3
+            assert exc.method == "process_payment"
+
+    def test_can_catch_as_reject_message(self):
+        """MaxRetriesExceeded can be caught as RejectMessage."""
+        try:
+            raise MaxRetriesExceeded(3, "process_payment")
+        except RejectMessage as exc:
+            assert isinstance(exc, MaxRetriesExceeded)
+
+    def test_can_catch_as_planq_error(self):
+        """MaxRetriesExceeded can be caught as PlanqError."""
+        try:
+            raise MaxRetriesExceeded(3, "process_payment")
+        except PlanqError as exc:
+            assert isinstance(exc, MaxRetriesExceeded)
+
+    def test_can_catch_as_exception(self):
+        """MaxRetriesExceeded can be caught as Exception."""
+        try:
+            raise MaxRetriesExceeded(3, "process_payment")
+        except Exception as exc:
+            assert isinstance(exc, MaxRetriesExceeded)
+
+    @pytest.mark.parametrize(
+        "max_attempts,method",
+        [
+            (1, "send_email"),
+            (3, "process_payment"),
+            (5, "retry.task"),
+            (10, "order.payment.process"),
+        ],
+    )
+    def test_message_formatting(self, max_attempts, method):
+        """Message formatting includes max_attempts and method."""
+        exc = MaxRetriesExceeded(max_attempts, method)
+        expected = (
+            f"Max retries ({max_attempts}) exceeded for method '{method}'"
+        )
+        assert str(exc) == expected
+
+    def test_stores_max_attempts_attribute(self):
+        """MaxRetriesExceeded stores max_attempts attribute."""
+        exc = MaxRetriesExceeded(5, "test_method")
+        assert hasattr(exc, "max_attempts")
+        assert exc.max_attempts == 5
+
+    def test_stores_method_attribute(self):
+        """MaxRetriesExceeded stores method attribute."""
+        exc = MaxRetriesExceeded(3, "process_order")
+        assert hasattr(exc, "method")
+        assert exc.method == "process_order"
+
+    def test_stores_both_attributes(self):
+        """MaxRetriesExceeded stores both max_attempts and method."""
+        exc = MaxRetriesExceeded(7, "retry.payment")
+        assert exc.max_attempts == 7
+        assert exc.method == "retry.payment"
+        expected = "Max retries (7) exceeded for method 'retry.payment'"
+        assert str(exc) == expected
+
+    def test_zero_max_attempts_is_valid(self):
+        """max_attempts=0 is a valid value (no retries allowed)."""
+        exc = MaxRetriesExceeded(0, "no_retry_task")
+        assert exc.max_attempts == 0
+        assert str(exc) == "Max retries (0) exceeded for method 'no_retry_task'"
+
+    def test_empty_method_name_is_valid(self):
+        """Empty method name is technically valid."""
+        exc = MaxRetriesExceeded(3, "")
+        assert exc.method == ""
+        assert str(exc) == "Max retries (3) exceeded for method ''"
 
 
 # === Layer 5: ProcessShutdown Exception ===

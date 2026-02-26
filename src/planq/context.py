@@ -21,7 +21,7 @@ class PlanqContext:
     execution modes.
 
     Attributes:
-        broker_message_id: Unique broker-assigned message identifier.
+        message_id: Unique broker-assigned message identifier.
         msg: The BrokerMessage being processed.
         route: TaskRoute configuration for the current handler.
         max_attempts: Effective retry limit (1 + max_retries).
@@ -31,7 +31,7 @@ class PlanqContext:
     """
 
     def __init__(self) -> None:
-        self.broker_message_id: str | None = None
+        self.message_id: str | None = None
         self.msg: BrokerMessage | None = None
         self.route: TaskRoute | None = None
         self.max_attempts: int | None = None
@@ -100,7 +100,7 @@ class PlanqContextFilter(logging.Filter):
 
         if (msg := ctx.msg) is not None:
             record.queue_name = msg.queue_name
-            record.broker_message_id = msg.broker_message_id
+            record.message_id = msg.message_id
             if (correlation_id := msg.correlation_id) is not None:
                 record.correlation_id = correlation_id
             else:
@@ -111,7 +111,7 @@ class PlanqContextFilter(logging.Filter):
             record.planq_headers = msg.headers
         else:
             record.queue_name = self.default_value
-            record.broker_message_id = self.default_value
+            record.message_id = self.default_value
             record.correlation_id = self.default_value
             record.method = self.default_value
             record.attempt = self.default_value

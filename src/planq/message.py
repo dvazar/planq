@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from planq.models import JsonRpcRequest
     from planq.types import Headers, JsonRpcId, Seconds
+
+logger = logging.getLogger(__name__)
 
 
 class BrokerMessage:
@@ -47,8 +50,10 @@ class BrokerMessage:
         self.received_at = received_at
         self.queue_name = queue_name
 
+        self._is_settled: bool = False
+
     @property
-    def broker_message_id(self):
+    def message_id(self):
         """Unique identifier for the message from the broker's perspective.
 
         May be used for logging, tracing, and debugging. Not used by
@@ -98,6 +103,22 @@ class BrokerMessage:
         """Acknowledge successful processing and remove the message.
 
         Raises:
+            NotImplementedError: ``_ack`` must be overridden by subclasses.
+        """
+        if self._is_settled:
+            logger.debug(
+                "Message %(message_id)s is already settled, "
+                "skipping ack",
+            )
+            return
+
+        await self._ack()
+        self._is_settled = True
+
+    async def _ack(self) -> None:
+        """Provider-specific implementation of message acknowledgement.
+
+        Raises:
             NotImplementedError: Must be overridden by subclasses.
         """
         raise NotImplementedError
@@ -109,6 +130,22 @@ class BrokerMessage:
         is registered for the method.
 
         Raises:
+            NotImplementedError: ``_reject`` must be overridden by subclasses.
+        """
+        if self._is_settled:
+            logger.debug(
+                "Message %(message_id)s is already settled, "
+                "skipping reject"
+            )
+            return
+
+        await self._reject()
+        self._is_settled = True
+
+    async def _reject(self) -> None:
+        """Provider-specific implementation of message rejection.
+
+        Raises:
             NotImplementedError: Must be overridden by subclasses.
         """
         raise NotImplementedError
@@ -118,6 +155,27 @@ class BrokerMessage:
 
         The message will become visible again after ``delay`` seconds,
         allowing another consumer to re-process it.
+
+        Args:
+            delay: Visibility delay in seconds before the message is
+                requeued for redelivery.
+
+        Raises:
+            NotImplementedError: ``_nack`` must be overridden by subclasses.
+        """
+        if self._is_settled:
+            logger.debug(
+                "Message %(message_id)s is already settled, "
+                "skipping nack"
+            )
+            return
+
+        await self._nack(delay)
+        self._is_settled = True
+
+    async def _nack(self, delay: Seconds) -> None:
+        """Provider-specific implementation of negative acknowledgement
+        with backoff.
 
         Args:
             delay: Visibility delay in seconds before the message is

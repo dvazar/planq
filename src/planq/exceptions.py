@@ -12,10 +12,6 @@ class PlanqError(Exception):
     """Base exception for all planq errors."""
 
 
-class MethodNotFound(PlanqError):
-    """Raised when no registered handler exists for a given method name."""
-
-
 class HandlerTimeout(PlanqError):
     """Raised when a handler exceeds its configured time_limit.
 
@@ -83,10 +79,6 @@ class RetryMessage(PlanqError):
             raise ValueError("delay must be positive")
 
         self.delay = delay
-        super().__init__(
-            "Retry message in %(delay_seconds).1f seconds. "
-            "Attempt %(attempt)d/%(max_attempts)d"
-        )
 
 
 #: Alias for RetryMessage for more concise usage in handlers.
@@ -95,3 +87,22 @@ Retry = RetryMessage
 
 class RejectMessage(PlanqError):
     """Signal the transport layer to permanently reject the message."""
+
+
+class MethodNotFound(RejectMessage):
+    """Raised when no registered handler exists for a given method name."""
+
+    def __init__(self, method: str) -> None:
+        super().__init__(f"No registered handler for method '{method}'")
+        self.method = method
+
+
+class MaxRetriesExceeded(RejectMessage):
+    """Raised when a message has reached its maximum number of retries."""
+
+    def __init__(self, max_attempts: int, method: str) -> None:
+        super().__init__(
+            f"Max retries ({max_attempts}) exceeded for method '{method}'"
+        )
+        self.max_attempts = max_attempts
+        self.method = method

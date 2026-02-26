@@ -44,18 +44,21 @@ class CustomOnPoisonBroker(BaseBroker):
         """Initialize with tracking flag."""
         super().__init__(dsn)
         self.on_poison_called = False
+        self.last_message_id = None
         self.last_raw_body = None
         self.last_queue = None
         self.last_error = None
 
     async def on_poison_message(
         self,
+        message_id: str,
         raw_body: str | bytes,
         queue: str,
         error: Exception,
     ) -> None:
         """Custom implementation that tracks calls."""
         self.on_poison_called = True
+        self.last_message_id = message_id
         self.last_raw_body = raw_body
         self.last_queue = queue
         self.last_error = error
@@ -371,7 +374,9 @@ class TestOnPoisonMessage:
         error = ValueError("JSON decode failed")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             mock_logger.error.assert_called_once()
             args, kwargs = mock_logger.error.call_args
@@ -387,7 +392,9 @@ class TestOnPoisonMessage:
         error = ValueError("test")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             args, kwargs = mock_logger.error.call_args
             ctx = args[1]
@@ -403,7 +410,9 @@ class TestOnPoisonMessage:
         error = ValueError("test")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             args, _ = mock_logger.error.call_args
             ctx = args[1]
@@ -419,7 +428,9 @@ class TestOnPoisonMessage:
         error = ValueError("test error")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             args, _ = mock_logger.error.call_args
             ctx = args[1]
@@ -438,7 +449,9 @@ class TestOnPoisonMessage:
         error = ValueError("test error")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             args, _ = mock_logger.error.call_args
             ctx = args[1]
@@ -457,7 +470,9 @@ class TestOnPoisonMessage:
         error = ValueError("test error")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             args, _ = mock_logger.error.call_args
             ctx = args[1]
@@ -476,7 +491,9 @@ class TestOnPoisonMessage:
         error = ValueError("test error")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             args, _ = mock_logger.error.call_args
             ctx = args[1]
@@ -495,7 +512,9 @@ class TestOnPoisonMessage:
         error = ValueError("test error")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             mock_logger.error.assert_called_once()
             args, kwargs = mock_logger.error.call_args
@@ -514,7 +533,9 @@ class TestOnPoisonMessage:
         error = ValueError("test error")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             args, _ = mock_logger.error.call_args
             ctx = args[1]
@@ -534,7 +555,9 @@ class TestOnPoisonMessage:
         error = ValueError("test error")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             mock_logger.error.assert_called_once()
             args, _ = mock_logger.error.call_args
@@ -561,7 +584,9 @@ class TestOnPoisonMessage:
         queue = "test-queue"
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             _, kwargs = mock_logger.error.call_args
             assert kwargs["exc_info"] is error
@@ -575,7 +600,9 @@ class TestOnPoisonMessage:
         error = ValueError("empty message")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             mock_logger.error.assert_called_once()
             args, _ = mock_logger.error.call_args
@@ -593,7 +620,9 @@ class TestOnPoisonMessage:
         error = ValueError("empty message")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             mock_logger.error.assert_called_once()
             args, _ = mock_logger.error.call_args
@@ -611,7 +640,9 @@ class TestOnPoisonMessage:
         error = ValueError("test")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             args, _ = mock_logger.error.call_args
             ctx = args[1]
@@ -628,7 +659,9 @@ class TestOnPoisonMessage:
         error = ValueError("test")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             args, _ = mock_logger.error.call_args
             ctx = args[1]
@@ -645,7 +678,9 @@ class TestOnPoisonMessage:
         error = ValueError("test")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             args, _ = mock_logger.error.call_args
             ctx = args[1]
@@ -666,7 +701,9 @@ class TestOnPoisonMessage:
         error = ValueError("test")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             args, _ = mock_logger.error.call_args
             ctx = args[1]
@@ -686,7 +723,9 @@ class TestOnPoisonMessage:
         error = ValueError("test")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             mock_logger.error.assert_called_once()
             args, _ = mock_logger.error.call_args
@@ -704,7 +743,9 @@ class TestOnPoisonMessage:
         error = ValueError("test")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             args, _ = mock_logger.error.call_args
             ctx = args[1]
@@ -720,7 +761,9 @@ class TestOnPoisonMessage:
         error = ValueError("test")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             args, _ = mock_logger.error.call_args
             ctx = args[1]
@@ -739,20 +782,45 @@ class TestOnPoisonMessage:
         error = ValueError("test")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             _, kwargs = mock_logger.error.call_args
             extra = kwargs["extra"]
             # Verify all expected keys
+            assert "message_id" in extra
             assert "queue_name" in extra
             assert "body_size" in extra
             assert "is_truncated" in extra
             assert "raw_body_snippet" in extra
             # Verify types
+            assert isinstance(extra["message_id"], str)
             assert isinstance(extra["queue_name"], str)
             assert isinstance(extra["body_size"], int)
             assert isinstance(extra["is_truncated"], bool)
             assert isinstance(extra["raw_body_snippet"], str)
+
+    @pytest.mark.asyncio
+    async def test_on_poison_message_logs_message_id(self):
+        """on_poison_message includes message_id in log context."""
+        broker = MinimalBroker("test-dsn")
+        message_id = "poison-msg-12345"
+        raw_body = "test body"
+        queue = "test-queue"
+        error = ValueError("test")
+
+        with patch("planq.broker.logger") as mock_logger:
+            await broker.on_poison_message(message_id, raw_body, queue, error)
+
+            args, kwargs = mock_logger.error.call_args
+            ctx = args[1]
+            extra = kwargs["extra"]
+
+            # Verify message_id in both context dict and extra
+            assert ctx["message_id"] == "poison-msg-12345"
+            assert extra["message_id"] == "poison-msg-12345"
+            assert isinstance(extra["message_id"], str)
 
 
 class TestBaseBrokerContextManager:
@@ -922,7 +990,9 @@ class TestBaseBrokerSubclassing:
         error = ValueError("test error")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             # Should use inherited implementation
             mock_logger.error.assert_called_once()
@@ -937,9 +1007,10 @@ class TestBaseBrokerSubclassing:
 
         assert not broker.on_poison_called
 
-        await broker.on_poison_message(raw_body, queue, error)
+        await broker.on_poison_message("test-msg-id", raw_body, queue, error)
 
         assert broker.on_poison_called
+        assert broker.last_message_id == "test-msg-id"
         assert broker.last_raw_body == raw_body
         assert broker.last_queue == queue
         assert broker.last_error is error
@@ -972,6 +1043,7 @@ class TestBaseBrokerPropertyBased:
         assert result == result.strip()
 
     @given(
+        st.text(min_size=1, max_size=50),
         st.one_of(
             st.text(min_size=0, max_size=2000),
             st.binary(min_size=0, max_size=2000),
@@ -988,6 +1060,7 @@ class TestBaseBrokerPropertyBased:
     @pytest.mark.asyncio
     async def test_on_poison_message_handles_any_input(
         self,
+        message_id: str,
         raw_body: str | bytes,
         queue: str,
         error: Exception,
@@ -996,7 +1069,7 @@ class TestBaseBrokerPropertyBased:
         broker = MinimalBroker("test-dsn")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(message_id, raw_body, queue, error)
 
             # Should always log
             mock_logger.error.assert_called_once()
@@ -1030,7 +1103,9 @@ class TestBaseBrokerPropertyBased:
         error = ValueError("test")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             args, _ = mock_logger.error.call_args
             ctx = args[1]
@@ -1057,7 +1132,9 @@ class TestBaseBrokerPropertyBased:
         error = ValueError("test")
 
         with patch("planq.broker.logger") as mock_logger:
-            await broker.on_poison_message(raw_body, queue, error)
+            await broker.on_poison_message(
+                "test-msg-id", raw_body, queue, error
+            )
 
             args, _ = mock_logger.error.call_args
             ctx = args[1]

@@ -29,11 +29,11 @@ class _TestBrokerMessage(BrokerMessage):
 
     @property
     @override
-    def broker_message_id(self) -> str:
+    def message_id(self) -> str:
         return self._broker_message_id
 
-    @broker_message_id.setter
-    def broker_message_id(self, value: str):
+    @message_id.setter
+    def message_id(self, value: str):
         self._broker_message_id = value
 
     @property
@@ -77,7 +77,7 @@ class TestPlanqContextConstruction:
         """PlanqContext initializes all fields to None."""
         ctx = PlanqContext()
 
-        assert ctx.broker_message_id is None
+        assert ctx.message_id is None
         assert ctx.msg is None
         assert ctx.route is None
         assert ctx.max_attempts is None
@@ -94,12 +94,12 @@ class TestPlanqContextConstruction:
         """PlanqContext stores assigned attribute values."""
         ctx = PlanqContext()
 
-        ctx.broker_message_id = "msg-123"
+        ctx.message_id = "msg-123"
         ctx.max_attempts = 3
         ctx.broker_latency = 1.5
         ctx.internal_latency = 0.25
 
-        assert ctx.broker_message_id == "msg-123"
+        assert ctx.message_id == "msg-123"
         assert ctx.max_attempts == 3
         assert ctx.broker_latency == 1.5
         assert ctx.internal_latency == 0.25
@@ -159,17 +159,17 @@ class TestGetPlanqContext:
         ctx = get_planq_context()
 
         assert isinstance(ctx, PlanqContext)
-        assert ctx.broker_message_id is None
+        assert ctx.message_id is None
 
     def test_returns_existing_context_in_same_scope(self):
         """get_planq_context() returns same context within scope."""
         ctx1 = get_planq_context()
-        ctx1.broker_message_id = "test-id"
+        ctx1.message_id = "test-id"
 
         ctx2 = get_planq_context()
 
         assert ctx1 is ctx2
-        assert ctx2.broker_message_id == "test-id"
+        assert ctx2.message_id == "test-id"
 
     @pytest.mark.asyncio
     async def test_context_shared_across_async_tasks(self):
@@ -180,7 +180,7 @@ class TestGetPlanqContext:
         """
         # Set context in parent
         parent_ctx = get_planq_context()
-        parent_ctx.broker_message_id = "parent-id"
+        parent_ctx.message_id = "parent-id"
 
         async def child_task():
             # Child sees parent's context
@@ -199,7 +199,7 @@ class TestGetPlanqContext:
 
         def thread_func(name: str):
             ctx = get_planq_context()
-            ctx.broker_message_id = f"{name}-id"
+            ctx.message_id = f"{name}-id"
             results[name] = ctx
 
         thread_a = threading.Thread(target=thread_func, args=("thread-a",))
@@ -211,8 +211,8 @@ class TestGetPlanqContext:
         thread_a.join()
         thread_b.join()
 
-        assert results["thread-a"].broker_message_id == "thread-a-id"
-        assert results["thread-b"].broker_message_id == "thread-b-id"
+        assert results["thread-a"].message_id == "thread-a-id"
+        assert results["thread-b"].message_id == "thread-b-id"
         assert results["thread-a"] is not results["thread-b"]
 
 
@@ -254,7 +254,7 @@ class TestPlanqContextFilterWithFullContext:
             received_at=1234567890.0,
             queue_name="test-queue",
         )
-        msg.broker_message_id = "broker-msg-123"
+        msg.message_id = "broker-msg-123"
         msg.delivery_count = 2
         msg.reply_to = "reply-queue"
 
@@ -270,7 +270,7 @@ class TestPlanqContextFilterWithFullContext:
         )
 
         # Populate context
-        ctx.broker_message_id = msg.broker_message_id
+        ctx.message_id = msg.message_id
         ctx.msg = msg
         ctx.route = route
         ctx.max_attempts = 4
@@ -294,7 +294,7 @@ class TestPlanqContextFilterWithFullContext:
         # Verify all attributes are set
         assert result is True
         assert record.queue_name == "test-queue"
-        assert record.broker_message_id == "broker-msg-123"
+        assert record.message_id == "broker-msg-123"
         assert record.correlation_id == "req-123"
         assert record.method == "test.method"
         assert record.attempt == 2
@@ -331,7 +331,7 @@ class TestPlanqContextFilterWithPartialContext:
         filter_instance.filter(record)
 
         assert record.queue_name == "MISSING"
-        assert record.broker_message_id == "MISSING"
+        assert record.message_id == "MISSING"
         assert record.correlation_id == "MISSING"
         assert record.method == "MISSING"
         assert record.attempt == "MISSING"

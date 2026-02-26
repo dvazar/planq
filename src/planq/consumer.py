@@ -21,6 +21,8 @@ from planq.enums import ExecutionMode, JsonRpcError
 from planq.exceptions import (
     FeatureNotSupportedError,
     HandlerTimeout,
+    MaxRetriesExceeded,
+    MethodNotFound,
     ProcessShutdown,
     RejectMessage,
     RetryMessage,
@@ -157,7 +159,7 @@ class _ProcessPool:
                     else:
                         self._active_pids[task_id] = pid
             except Exception as exc:
-                logger.exception(
+                logger.error(
                     f"{type(self).__name__} monitor error", exc_info=exc
                 )
 
@@ -278,6 +280,7 @@ class PlanqConsumer:
             middlewares if middlewares is not None else [DeadlineMiddleware()]
         )
         self._build_pipeline()
+        self._reject_callbacks = []
 
     def task(
         self,
@@ -351,6 +354,35 @@ class PlanqConsumer:
         return decorator
 
     handler = task
+
+    def on_reject(self):
+        """Register a callback to be called when a message is rejected."""
+
+        def decorator(func):
+            self._reject_callbacks.append(func)
+            return func
+
+        return decorator
+
+    async def _execute_reject_callbacks(
+        self,
+        msg: BrokerMessage,
+        exc: Exception,
+    ) -> None:
+        if not self._reject_callbacks:
+            return
+
+        results = await asyncio.gather(
+            *(callback(msg, exc) for callback in self._reject_callbacks),
+            return_exceptions=True,
+        )
+
+        for callback, result in zip(self._reject_callbacks, results):
+            if isinstance(result, Exception):
+                logger.error(
+                    f"Reject callback '{callback.__qualname__}' failed",
+                    exc_info=result,
+                )
 
     def _calculate_backoff(self, delivery_count: int) -> Seconds:
         # Full Jitter Backoff Strategy
@@ -509,15 +541,16 @@ class PlanqConsumer:
             RetryMessage: When the message should be requeued.
             RejectMessage: When the message should be permanently discarded.
         """
+        method = msg.body.method
+
         # 1. Route
-        if (route := self.routes.get(msg.body.method)) is None:
-            logger.error("No route for message, rejecting")
-            raise RejectMessage
+        if (route := self.routes.get(method)) is None:
+            raise MethodNotFound(method)
 
         # 2. Execute handler
         ctx = get_planq_context()
         ctx.route = route
-        ctx.max_attempts = self._get_max_retries(route) + 1
+        ctx.max_attempts = max_attempts = self._get_max_retries(route) + 1
 
         handler_exc: Exception | None = None
         result: Any = None
@@ -530,49 +563,30 @@ class PlanqConsumer:
 
         # 3. Handle errors
         if handler_exc is not None:
-            log_ctx = {
-                "error_type": type(handler_exc).__name__,
-                "error_msg": str(handler_exc),
-            }
-
             if (
                 route.retry_on is None
                 or should_retry(handler_exc, route.retry_on) is False
             ):
-                logger.error(
-                    "Message processing failed. "
-                    "Reason: %(error_type)s(%(error_msg)r)",
-                    log_ctx,
-                    extra=log_ctx,
-                    exc_info=handler_exc,
-                )
-                raise RejectMessage
+                raise RejectMessage(
+                    "Message processing failed with a non-retryable "
+                    f"error for method '{method}'."
+                ) from handler_exc
 
-            if msg.delivery_count < ctx.max_attempts:
+            if msg.delivery_count < max_attempts:
+                log_ctx = {
+                    "error_type": type(handler_exc).__name__,
+                    "error_msg": str(handler_exc),
+                }
                 logger.warning(
-                    "Message processing failed. "
-                    "Reason: %(error_type)s(%(error_msg)r)",
+                    f"Message processing failed for method '{method}'. "
+                    f"Retrying. Reason: %(error_type)s(%(error_msg)r)",
                     log_ctx,
                     extra=log_ctx,
                 )
                 raise RetryMessage
 
-            logger.error(
-                "Message processing permanently "
-                "failed after %(max_attempts)d attempts",
-                extra=log_ctx,
-                exc_info=handler_exc,
-            )
-
-            if msg.correlation_id is None:
-                raise RejectMessage
-
-            if not msg.reply_to:
-                logger.info(
-                    "Message has correlation id but no reply_to, "
-                    "rejecting without reply",
-                )
-                raise RejectMessage
+            if msg.correlation_id is None or not msg.reply_to:
+                raise MaxRetriesExceeded(max_attempts, method) from handler_exc
 
             return JsonRpcResponse(
                 id=msg.correlation_id,
@@ -591,10 +605,6 @@ class PlanqConsumer:
         # 5. Build response for requests
         if msg.correlation_id is not None:
             if not msg.reply_to:
-                logger.info(
-                    "Message has correlation id but no reply_to, "
-                    "acking without reply",
-                )
                 return None
 
             response = JsonRpcResponse(
@@ -631,18 +641,19 @@ class PlanqConsumer:
                 and msg.correlation_id is not None
                 and msg.reply_to
             ):
-                outbound_headers = response.headers or None
                 try:
                     await self.broker.publish(
                         msg.reply_to,
                         response,
-                        headers=outbound_headers,
+                        headers=response.headers,
                     )
                 except Exception as exc:
                     backoff = self._calculate_backoff(msg.delivery_count)
-                    logger.exception(
-                        "Failed to publish response, "
-                        f"nacking with {backoff:.1f} delay",
+                    logger.error(
+                        "Failed to publish response to '%(reply_to)s' "
+                        "for method '%(method)s'. "
+                        "Message ID: %(message_id)s. "
+                        f"Nacking with {backoff:.1f}s delay.",
                         extra={"delay_seconds": backoff},
                         exc_info=exc,
                     )
@@ -654,17 +665,30 @@ class PlanqConsumer:
         except RetryMessage as exc:
             if (backoff := exc.delay) is None:
                 backoff = self._calculate_backoff(msg.delivery_count)
-
-            log_ctx = {"delay_seconds": backoff}
-            logger.info(str(exc), log_ctx, extra=log_ctx)
+            logger.info(
+                "Message ID: %(message_id)s. Requeueing for retry. "
+                "Method: '%(method)s', Attempt: %(attempt)d/%(max_attempts)d, "
+                f"Delay: {backoff:.1f}s.",
+            )
             await msg.nack(backoff)
 
-        except RejectMessage:
-            await msg.reject()  # todo: + move to DLQ
+        except RejectMessage as exc:
+            logger.error(
+                f"Message ID: %(message_id)s. Rejecting. {str(exc)}",
+                exc_info=exc,
+            )
+            await self._execute_reject_callbacks(msg, exc)
+            await msg.reject()
 
         except Exception as exc:
-            logger.exception("Critical unhandled pipeline error", exc_info=exc)
-            await msg.reject()  # todo: + move to DLQ
+            backoff = self._calculate_backoff(msg.delivery_count)
+            logger.error(
+                "Unhandled pipeline error during message processing. "
+                "Method: '%(method)s', Message ID: %(message_id)s. "
+                f"Nacking with {backoff:.1f}s delay.",
+                exc_info=exc,
+            )
+            await msg.nack(backoff)
 
     async def _guarded_process(
         self,
@@ -673,6 +697,13 @@ class PlanqConsumer:
     ) -> None:
         try:
             await self._process_message(msg)
+        except Exception as exc:
+            logger.error(
+                "Broker operation failed for method '%(method)s'. "
+                "Message ID: %(message_id)s. "
+                "Relying on broker's visibility timeout for redelivery.",
+                exc_info=exc,
+            )
         finally:
             sem.release()
 

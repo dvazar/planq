@@ -74,7 +74,7 @@ class SqsBrokerMessage(BrokerMessage):
 
     @property
     @override
-    def broker_message_id(self) -> str:
+    def message_id(self) -> str:
         """SQS MessageId for logging and tracing."""
         return self.raw["MessageId"]
 
@@ -104,7 +104,7 @@ class SqsBrokerMessage(BrokerMessage):
         return None
 
     @override
-    async def ack(self) -> None:
+    async def _ack(self) -> None:
         """Delete the message from SQS to signal successful processing."""
         await self._sqs_client.delete_message(
             QueueUrl=self._queue_url,
@@ -112,7 +112,7 @@ class SqsBrokerMessage(BrokerMessage):
         )
 
     @override
-    async def reject(self) -> None:
+    async def _reject(self) -> None:
         """Delete the message from SQS without retrying."""
         await self._sqs_client.delete_message(
             QueueUrl=self._queue_url,
@@ -120,7 +120,7 @@ class SqsBrokerMessage(BrokerMessage):
         )
 
     @override
-    async def nack(self, delay: Seconds) -> None:
+    async def _nack(self, delay: Seconds) -> None:
         """Extend the visibility timeout to defer redelivery.
 
         Args:
@@ -300,17 +300,25 @@ class SqsBroker(BaseBroker):
             for raw_msg in resp.get("Messages", ()):
                 try:
                     body = JsonRpcRequest.model_validate_json(raw_msg["Body"])
-                except Exception as e:
+                except Exception as exc:
                     try:
-                        await self.on_poison_message(raw_msg["Body"], queue, e)
+                        await self.on_poison_message(
+                            raw_msg["MessageId"], raw_msg["Body"], queue, exc
+                        )
                         await self._client.delete_message(
                             QueueUrl=queue,
                             ReceiptHandle=raw_msg["ReceiptHandle"],
                         )
                     except Exception as exc:
-                        logger.exception(
-                            "Failed to handle poison message %s",
-                            raw_msg["MessageId"],
+                        log_ctx = {
+                            "message_id": raw_msg["MessageId"],
+                            "queue_name": queue_name,
+                        }
+                        logger.error(
+                            "Failed to handle poison message. "
+                            "Message ID: %(message_id)s.",
+                            log_ctx,
+                            extra=log_ctx,
                             exc_info=exc,
                         )
                     continue
