@@ -204,6 +204,21 @@ class TestTaskRegistration:
 
         assert consumer.routes["test"].max_retries == 0
 
+    def test_typed_handler_works_at_runtime(self):
+        """Type hints don't break runtime behavior."""
+        broker = MagicMock()
+        consumer = PlanqConsumer(broker)
+
+        @consumer.task("typed.method", mode=ExecutionMode.ASYNC)
+        async def handler(x: int, y: int) -> int:
+            return x + y
+
+        # Verify registration works
+        assert "typed.method" in consumer.routes
+        route = consumer.routes["typed.method"]
+        assert route.handler is handler
+        assert route.mode == ExecutionMode.ASYNC
+
 
 # === Layer 2: Retry Logic ===
 

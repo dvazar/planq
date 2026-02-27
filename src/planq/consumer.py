@@ -14,7 +14,16 @@ import uuid
 from concurrent.futures import Future, ProcessPoolExecutor
 from functools import partial
 from random import uniform
-from typing import TYPE_CHECKING, Any, Callable, Final
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Final,
+    Literal,
+    ParamSpec,
+    TypeVar,
+    overload,
+)
 
 from planq.context import get_planq_context
 from planq.enums import ExecutionMode, JsonRpcError
@@ -47,6 +56,9 @@ if TYPE_CHECKING:
     from planq.types import RetryCondition, Seconds
 
     type CallNext = Callable[[BrokerMessage], Awaitable[JsonRpcResponse | None]]
+
+P = ParamSpec("P")  # Captures function parameters (*args, **kwargs)
+T = TypeVar("T")  # Captures return type
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +293,59 @@ class PlanqConsumer:
         )
         self._build_pipeline()
         self._reject_callbacks = []
+
+    @overload
+    def task(
+        self,
+        name: str,
+        mode: Literal[ExecutionMode.ASYNC] = ...,
+        *,
+        time_limit: float | None = None,
+        grace_period: float | None = None,
+        max_retries: int | None = None,
+        retry_on: (
+            RetryCondition
+            | list[RetryCondition]
+            | tuple[RetryCondition, ...]
+            | None
+        ) = None,
+    ) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]: ...
+
+    @overload
+    def task(
+        self,
+        name: str,
+        mode: Literal[ExecutionMode.THREAD, ExecutionMode.PROCESS],
+        *,
+        time_limit: float | None = None,
+        grace_period: float | None = None,
+        max_retries: int | None = None,
+        retry_on: (
+            RetryCondition
+            | list[RetryCondition]
+            | tuple[RetryCondition, ...]
+            | None
+        ) = None,
+    ) -> Callable[[Callable[P, T]], Callable[P, T]]: ...
+
+    @overload
+    def task(
+        self,
+        name: str,
+        mode: ExecutionMode = ...,
+        *,
+        time_limit: float | None = None,
+        grace_period: float | None = None,
+        max_retries: int | None = None,
+        retry_on: (
+            RetryCondition
+            | list[RetryCondition]
+            | tuple[RetryCondition, ...]
+            | None
+        ) = None,
+    ) -> Callable[
+        [Callable[P, Awaitable[T] | T]], Callable[P, Awaitable[T] | T]
+    ]: ...
 
     def task(
         self,
