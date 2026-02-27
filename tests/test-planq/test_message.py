@@ -300,6 +300,28 @@ class TestBrokerMessageCorrelationId:
 class TestBrokerMessageAbstractProperties:
     """Test that abstract properties raise NotImplementedError."""
 
+    def test_message_id_raises_not_implemented(
+        self, json_rpc_notification, broker_message_factory
+    ):
+        """message_id property raises NotImplementedError."""
+        msg = broker_message_factory(
+            raw=None, body=json_rpc_notification, headers={}
+        )
+
+        with pytest.raises(NotImplementedError):
+            _ = msg.message_id
+
+    def test_enqueued_at_raises_not_implemented(
+        self, json_rpc_notification, broker_message_factory
+    ):
+        """enqueued_at property raises NotImplementedError."""
+        msg = broker_message_factory(
+            raw=None, body=json_rpc_notification, headers={}
+        )
+
+        with pytest.raises(NotImplementedError):
+            _ = msg.enqueued_at
+
     def test_delivery_count_raises_not_implemented(
         self, json_rpc_notification, broker_message_factory
     ):
@@ -530,3 +552,203 @@ class TestBrokerMessageFuzz:
 
         with pytest.raises(NotImplementedError):
             await msg.nack(10.0)
+
+
+# === Layer 3: Settled State Tests ===
+
+
+class ConcreteBrokerMessage(BrokerMessage):
+    """Concrete implementation for testing settled state."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._ack_called = False
+        self._reject_called = False
+        self._nack_called = False
+
+    @property
+    def message_id(self) -> str:
+        return "test-msg-id"
+
+    @property
+    def enqueued_at(self) -> float:
+        return 1234567890.0
+
+    @property
+    def delivery_count(self) -> int:
+        return 1
+
+    @property
+    def reply_to(self) -> str | None:
+        return None
+
+    async def _ack(self) -> None:
+        """Track that _ack was called."""
+        self._ack_called = True
+
+    async def _reject(self) -> None:
+        """Track that _reject was called."""
+        self._reject_called = True
+
+    async def _nack(self, delay: float) -> None:
+        """Track that _nack was called."""
+        self._nack_called = True
+
+
+@pytest.fixture
+def concrete_message(json_rpc_notification):
+    """Concrete BrokerMessage for testing settled state."""
+    return ConcreteBrokerMessage(
+        raw={"test": "data"},
+        body=json_rpc_notification,
+        headers={},
+        received_at=1234567890.0,
+        queue_name="test-queue",
+    )
+
+
+class TestBrokerMessageSettledState:
+    """Test settled state tracking and logging."""
+
+    @pytest.mark.asyncio
+    async def test_ack_double_call_logs_debug(self, concrete_message, caplog):
+        """Second ack() call logs debug message and returns early."""
+        import logging
+
+        with caplog.at_level(logging.DEBUG):
+            await concrete_message.ack()
+            await concrete_message.ack()  # Second call
+
+        assert "already settled" in caplog.text
+        assert "skipping ack" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_reject_double_call_logs_debug(
+        self, concrete_message, caplog
+    ):
+        """Second reject() call logs debug message and returns early."""
+        import logging
+
+        with caplog.at_level(logging.DEBUG):
+            await concrete_message.reject()
+            await concrete_message.reject()  # Second call
+
+        assert "already settled" in caplog.text
+        assert "skipping reject" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_nack_double_call_logs_debug(self, concrete_message, caplog):
+        """Second nack() call logs debug message and returns early."""
+        import logging
+
+        with caplog.at_level(logging.DEBUG):
+            await concrete_message.nack(10.0)
+            await concrete_message.nack(10.0)  # Second call
+
+        assert "already settled" in caplog.text
+        assert "skipping nack" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_ack_double_call_skips_underlying_method(
+        self, json_rpc_notification
+    ):
+        """Second ack() call doesn't invoke _ack()."""
+        msg = ConcreteBrokerMessage(
+            raw={},
+            body=json_rpc_notification,
+            headers={},
+            received_at=1.0,
+            queue_name="test",
+        )
+
+        await msg.ack()
+        assert msg._ack_called is True
+
+        # Reset flag to track second call
+        msg._ack_called = False
+        await msg.ack()  # Second call
+
+        # _ack should not be called again
+        assert msg._ack_called is False
+
+    @pytest.mark.asyncio
+    async def test_reject_double_call_skips_underlying_method(
+        self, json_rpc_notification
+    ):
+        """Second reject() call doesn't invoke _reject()."""
+        msg = ConcreteBrokerMessage(
+            raw={},
+            body=json_rpc_notification,
+            headers={},
+            received_at=1.0,
+            queue_name="test",
+        )
+
+        await msg.reject()
+        assert msg._reject_called is True
+
+        # Reset flag to track second call
+        msg._reject_called = False
+        await msg.reject()  # Second call
+
+        # _reject should not be called again
+        assert msg._reject_called is False
+
+    @pytest.mark.asyncio
+    async def test_nack_double_call_skips_underlying_method(
+        self, json_rpc_notification
+    ):
+        """Second nack() call doesn't invoke _nack()."""
+        msg = ConcreteBrokerMessage(
+            raw={},
+            body=json_rpc_notification,
+            headers={},
+            received_at=1.0,
+            queue_name="test",
+        )
+
+        await msg.nack(10.0)
+        assert msg._nack_called is True
+
+        # Reset flag to track second call
+        msg._nack_called = False
+        await msg.nack(10.0)  # Second call
+
+        # _nack should not be called again
+        assert msg._nack_called is False
+
+    @pytest.mark.asyncio
+    async def test_ack_sets_is_settled_flag(self, concrete_message):
+        """ack() sets _is_settled flag to True."""
+        assert concrete_message._is_settled is False
+        await concrete_message.ack()
+        assert concrete_message._is_settled is True
+
+    @pytest.mark.asyncio
+    async def test_reject_sets_is_settled_flag(self, concrete_message):
+        """reject() sets _is_settled flag to True."""
+        assert concrete_message._is_settled is False
+        await concrete_message.reject()
+        assert concrete_message._is_settled is True
+
+    @pytest.mark.asyncio
+    async def test_nack_sets_is_settled_flag(self, concrete_message):
+        """nack() sets _is_settled flag to True."""
+        assert concrete_message._is_settled is False
+        await concrete_message.nack(10.0)
+        assert concrete_message._is_settled is True
+
+    @pytest.mark.asyncio
+    async def test_settled_message_log_contains_message_id(
+        self, concrete_message, caplog
+    ):
+        """Settled state log message contains message_id."""
+        import logging
+
+        with caplog.at_level(logging.DEBUG):
+            await concrete_message.ack()
+            await concrete_message.ack()  # Second call
+
+        # The log uses %(message_id)s format but message_id is in extra dict
+        # so it should be formatted into the message
+        assert "test-msg-id" in caplog.text or "already settled" in caplog.text

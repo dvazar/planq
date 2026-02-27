@@ -12,6 +12,7 @@ from planq.exceptions import (
     PlanqError,
     ProcessShutdown,
     RejectMessage,
+    RetryMessage,
 )
 
 # === Layer 1: Exception Hierarchy ===
@@ -230,7 +231,7 @@ class TestMaxRetriesExceeded:
         assert issubclass(MaxRetriesExceeded, RejectMessage)
 
     def test_max_retries_exceeded_inherits_from_planq_error(self):
-        """MaxRetriesExceeded is a subclass of PlanqError (via RejectMessage)."""
+        """MaxRetriesExceeded subclass of PlanqError (via RejectMessage)."""
         assert issubclass(MaxRetriesExceeded, PlanqError)
 
     def test_can_raise_max_retries_exceeded(self):
@@ -443,3 +444,64 @@ class TestFeatureNotSupportedError:
         assert exc.feature == ""
         assert exc.provider == ""
         assert str(exc) == " does not support the '' feature."
+
+
+# === Layer 7: RetryMessage Validation ===
+
+
+class TestRetryMessageValidation:
+    """Test RetryMessage delay validation."""
+
+    def test_retry_message_with_none_delay(self):
+        """RetryMessage with delay=None is valid."""
+        exc = RetryMessage(delay=None)
+        assert exc.delay is None
+
+    def test_retry_message_with_no_arguments(self):
+        """RetryMessage with no args defaults delay to None."""
+        exc = RetryMessage()
+        assert exc.delay is None
+
+    def test_retry_message_with_zero_delay_raises_error(self):
+        """RetryMessage raises ValueError for delay=0."""
+        with pytest.raises(ValueError) as exc_info:
+            RetryMessage(delay=0)
+        assert "delay must be positive" in str(exc_info.value)
+
+    def test_retry_message_with_negative_delay_raises_error(self):
+        """RetryMessage raises ValueError for negative delay."""
+        with pytest.raises(ValueError) as exc_info:
+            RetryMessage(delay=-1)
+        assert "delay must be positive" in str(exc_info.value)
+
+    def test_retry_message_with_negative_float_delay_raises_error(self):
+        """RetryMessage raises ValueError for negative float delay."""
+        with pytest.raises(ValueError) as exc_info:
+            RetryMessage(delay=-0.5)
+        assert "delay must be positive" in str(exc_info.value)
+
+    def test_retry_message_validation_error_message(self):
+        """RetryMessage ValueError has correct error message."""
+        with pytest.raises(ValueError) as exc_info:
+            RetryMessage(delay=0)
+        assert str(exc_info.value) == "delay must be positive"
+
+    def test_retry_message_with_small_positive_delay(self):
+        """RetryMessage with small positive delay is valid."""
+        exc = RetryMessage(delay=0.001)
+        assert exc.delay == 0.001
+
+    @pytest.mark.parametrize("invalid_delay", [0, -1, -10, -0.1, -100.5])
+    def test_retry_message_rejects_non_positive_delay(self, invalid_delay):
+        """RetryMessage raises ValueError for non-positive delay."""
+        with pytest.raises(ValueError) as exc_info:
+            RetryMessage(delay=invalid_delay)
+        assert "delay must be positive" in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        "valid_delay", [0.001, 0.1, 1.0, 10.0, 300.0, None]
+    )
+    def test_retry_message_accepts_valid_delay(self, valid_delay):
+        """RetryMessage accepts valid positive or None delay values."""
+        exc = RetryMessage(delay=valid_delay)
+        assert exc.delay == valid_delay

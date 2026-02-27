@@ -309,3 +309,192 @@ async def test_queue_name_extraction(sqs_broker, test_queue_url):
     assert msg is not None
     assert msg.queue_name == "test-queue"
     await msg.ack()
+
+
+# === Unit Tests for Queue Name Extraction ===
+
+
+class TestSqsBrokerQueueNameExtraction:
+    """Unit tests for queue name extraction from various identifiers."""
+
+    def test_get_queue_name_from_arn(self, sqs_broker):
+        """Extract queue name from SQS ARN."""
+        arn = "arn:aws:sqs:us-east-1:123456789:my-queue"
+        assert sqs_broker.get_queue_name(arn) == "my-queue"
+
+    def test_get_queue_name_from_arn_case_insensitive(self, sqs_broker):
+        """ARN with uppercase prefix works."""
+        arn = "ARN:aws:sqs:eu-west-1:999:test-queue"
+        assert sqs_broker.get_queue_name(arn) == "test-queue"
+
+    def test_get_queue_name_from_url(self, sqs_broker):
+        """Extract queue name from SQS URL."""
+        url = "http://localhost:4566/000000000000/test-queue"
+        assert sqs_broker.get_queue_name(url) == "test-queue"
+
+    def test_get_queue_name_from_https_url(self, sqs_broker):
+        """Extract queue name from HTTPS SQS URL."""
+        url = "https://sqs.us-east-1.amazonaws.com/123456789/my-queue"
+        assert sqs_broker.get_queue_name(url) == "my-queue"
+
+    def test_get_queue_name_from_simple_name(self, sqs_broker):
+        """Simple queue name returns as-is."""
+        name = "queue-name"
+        assert sqs_broker.get_queue_name(name) == "queue-name"
+
+    def test_get_queue_name_strips_whitespace(self, sqs_broker):
+        """Whitespace is stripped from queue name."""
+        name = "  queue  "
+        assert sqs_broker.get_queue_name(name) == "queue"
+
+    def test_get_queue_name_empty_string(self, sqs_broker):
+        """Empty string returns empty string."""
+        assert sqs_broker.get_queue_name("") == ""
+
+    def test_get_queue_name_whitespace_only(self, sqs_broker):
+        """Whitespace-only string returns empty string."""
+        assert sqs_broker.get_queue_name("   ") == ""
+
+    def test_get_queue_name_arn_with_colons_in_name(self, sqs_broker):
+        """ARN with colons in queue name extracts last segment."""
+        arn = "arn:aws:sqs:region:account:multi:colon:name"
+        assert sqs_broker.get_queue_name(arn) == "name"
+
+    @pytest.mark.parametrize(
+        "identifier,expected",
+        [
+            ("arn:aws:sqs:us-east-1:123:queue", "queue"),
+            ("ARN:aws:sqs:eu-west-1:999:test", "test"),
+            (
+                "arn:aws:sqs:region:account:multi:colon:name",
+                "name",
+            ),
+            (
+                "http://localhost:4566/000000000000/test-queue",
+                "test-queue",
+            ),
+            (
+                "https://sqs.us-east-1.amazonaws.com/123/my-q",
+                "my-q",
+            ),
+            ("simple-queue-name", "simple-queue-name"),
+            ("queue", "queue"),
+            ("  trimmed  ", "trimmed"),
+            ("   ", ""),
+            ("", ""),
+        ],
+    )
+    def test_get_queue_name_various_formats(
+        self, sqs_broker, identifier, expected
+    ):
+        """get_queue_name handles various identifier formats."""
+        assert sqs_broker.get_queue_name(identifier) == expected
+
+
+# === Integration Tests for Edge Cases ===
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_reply_to_none_when_attribute_missing(sqs_broker, test_queue_url):
+    """reply_to returns None when ReplyTo attribute is missing."""
+    request = JsonRpcRequest(method="test.no.reply", id="123")
+    await sqs_broker.publish(test_queue_url, request)  # No reply_to argument
+
+    msg = await consume_one(sqs_broker, test_queue_url)
+    assert msg is not None
+    assert msg.reply_to is None
+    await msg.ack()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_disconnect_when_not_connected(sqs_endpoint):
+    """disconnect() is safe when not connected."""
+    broker = SqsBroker(dsn=sqs_endpoint)
+    assert broker._client is None
+    await broker.disconnect()  # Should not raise
+    assert broker._client is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_double_disconnect_is_safe(sqs_endpoint):
+    """disconnect() can be called multiple times."""
+    broker = SqsBroker(dsn=sqs_endpoint)
+    await broker.connect()
+    await broker.disconnect()
+    await broker.disconnect()  # Second call should not raise
+    assert broker._client is None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_poison_message_is_deleted(sqs_broker, test_queue_url):
+    """Invalid JSON message is deleted from queue."""
+    # Send invalid JSON directly via SQS client
+    await sqs_broker._client.send_message(
+        QueueUrl=test_queue_url,
+        MessageBody="not valid json {{{",
+    )
+
+    # Try to consume - poison message should be deleted, we get nothing
+    messages = await consume_all(sqs_broker, test_queue_url, timeout=1.0)
+    assert len(messages) == 0  # Poison message was removed
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_poison_message_calls_hook(sqs_broker, test_queue_url):
+    """on_poison_message hook is called for invalid JSON."""
+    from unittest.mock import AsyncMock
+
+    # Mock the hook
+    sqs_broker.on_poison_message = AsyncMock()
+
+    # Send invalid JSON
+    resp = await sqs_broker._client.send_message(
+        QueueUrl=test_queue_url,
+        MessageBody="not json",
+    )
+    message_id = resp["MessageId"]
+
+    # Consume - should trigger hook
+    messages = await consume_all(sqs_broker, test_queue_url, timeout=1.0)
+
+    # Verify hook was called
+    sqs_broker.on_poison_message.assert_called_once()
+    call_args = sqs_broker.on_poison_message.call_args
+    assert call_args[0][0] == message_id  # First arg is message_id
+    assert call_args[0][1] == "not json"  # Second arg is body
+    assert len(messages) == 0  # Poison message deleted, not yielded
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_poison_message_handler_exception_logged(
+    sqs_broker, test_queue_url, caplog
+):
+    """Exception in on_poison_message is logged with context."""
+    import logging
+    from unittest.mock import AsyncMock
+
+    # Make hook raise exception
+    sqs_broker.on_poison_message = AsyncMock(
+        side_effect=RuntimeError("Hook failed")
+    )
+
+    # Send invalid JSON
+    resp = await sqs_broker._client.send_message(
+        QueueUrl=test_queue_url,
+        MessageBody="invalid",
+    )
+    message_id = resp["MessageId"]
+
+    with caplog.at_level(logging.ERROR):
+        messages = await consume_all(sqs_broker, test_queue_url, timeout=1.0)
+
+    # Verify error was logged
+    assert "Failed to handle poison message" in caplog.text
+    assert message_id in caplog.text  # message_id in log context
+    assert len(messages) == 0  # Poison message still deleted

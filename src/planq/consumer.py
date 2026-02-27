@@ -509,6 +509,9 @@ class PlanqConsumer:
                     time_limit=route.time_limit,
                     grace_period=route.grace_period,
                 )
+            case _:  # pragma: no cover
+                # Unreachable: all ExecutionMode values handled above
+                raise AssertionError(f"Unknown execution mode: {route.mode}")
 
     def _build_pipeline(self) -> None:
         """Build the middleware chain ending at _router_endpoint."""

@@ -13,7 +13,6 @@ from planq.models import (
     JsonRpcResponse,
 )
 
-
 # === Layer 1: Parametrized Edge Cases ===
 
 
@@ -76,6 +75,53 @@ class TestJsonRpcRequestValidation:
         assert request.method == "user.create"
         assert request.params == {"name": "Alice", "age": 30}
         assert request.id == "req-001"
+
+    def test_empty_string_id_converted_to_none(self):
+        """Empty string id is converted to None."""
+        request = JsonRpcRequest(method="test", id="")
+        assert request.id is None
+
+    def test_empty_string_id_is_none_not_empty_string(self):
+        """Empty string id becomes None, not empty string."""
+        request = JsonRpcRequest(method="test", id="")
+        assert request.id is None
+        assert request.id != ""
+
+    def test_single_space_id_not_converted(self):
+        """Single space id is not converted to None."""
+        request = JsonRpcRequest(method="test", id=" ")
+        assert request.id == " "
+
+    def test_whitespace_id_not_converted(self):
+        """Multiple spaces id is not converted to None."""
+        request = JsonRpcRequest(method="test", id="  ")
+        assert request.id == "  "
+
+    def test_zero_string_id_not_converted(self):
+        """String '0' is not converted to None."""
+        request = JsonRpcRequest(method="test", id="0")
+        assert request.id == "0"
+
+    def test_empty_string_from_json_parsing(self):
+        """Empty string in JSON is converted to None."""
+        json_str = '{"jsonrpc":"2.0","method":"test","id":""}'
+        request = JsonRpcRequest.model_validate_json(json_str)
+        assert request.id is None
+
+    @pytest.mark.parametrize(
+        "input_id,expected_id",
+        [
+            ("", None),
+            (" ", " "),
+            ("  ", "  "),
+            ("0", "0"),
+            ("\t", "\t"),
+        ],
+    )
+    def test_id_validation_edge_cases(self, input_id, expected_id):
+        """Only empty string is converted to None, other strings preserved."""
+        request = JsonRpcRequest(method="test", id=input_id)
+        assert request.id == expected_id
 
 
 class TestJsonRpcRequestStrictMode:
