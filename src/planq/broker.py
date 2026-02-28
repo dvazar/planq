@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
+from types import TracebackType
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
@@ -184,7 +185,12 @@ class BaseBroker:
         await self.connect()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[type-arg]
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         """Disconnect when exiting the async context manager.
 
         Args:

@@ -1,3 +1,5 @@
+"""Per-invocation execution context and structured logging filter."""
+
 from __future__ import annotations
 
 import logging
@@ -92,10 +94,25 @@ class PlanqContextFilter(logging.Filter):
     """
 
     def __init__(self, default_value: str | None = "-") -> None:
+        """Initialize with a placeholder for missing context fields.
+
+        Args:
+            default_value: String used when a context field is not
+                available (e.g. outside handler execution). Defaults
+                to ``"-"``.
+        """
         super().__init__()
         self.default_value = default_value
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """Inject PlanqContext fields into the log record.
+
+        Args:
+            record: The log record to enrich with context attributes.
+
+        Returns:
+            Always ``True`` (never suppresses records).
+        """
         ctx = get_planq_context()
 
         if (msg := ctx.msg) is not None:

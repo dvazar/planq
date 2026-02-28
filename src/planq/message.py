@@ -53,7 +53,7 @@ class BrokerMessage:
         self._is_settled: bool = False
 
     @property
-    def message_id(self):
+    def message_id(self) -> str:
         """Unique identifier for the message from the broker's perspective.
 
         May be used for logging, tracing, and debugging. Not used by
@@ -107,8 +107,7 @@ class BrokerMessage:
         """
         if self._is_settled:
             logger.debug(
-                "Message %(message_id)s is already settled, "
-                "skipping ack",
+                "Message %(message_id)s is already settled, skipping ack",
             )
             return
 
@@ -134,8 +133,7 @@ class BrokerMessage:
         """
         if self._is_settled:
             logger.debug(
-                "Message %(message_id)s is already settled, "
-                "skipping reject"
+                "Message %(message_id)s is already settled, skipping reject"
             )
             return
 
@@ -165,8 +163,7 @@ class BrokerMessage:
         """
         if self._is_settled:
             logger.debug(
-                "Message %(message_id)s is already settled, "
-                "skipping nack"
+                "Message %(message_id)s is already settled, skipping nack"
             )
             return
 

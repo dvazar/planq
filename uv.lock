@@ -262,6 +262,15 @@ wheels = [
 ]
 
 [[package]]
+name = "dacite"
+version = "1.9.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/55/a0/7ca79796e799a3e782045d29bf052b5cde7439a2bbb17f15ff44f7aacc63/dacite-1.9.2.tar.gz", hash = "sha256:6ccc3b299727c7aa17582f0021f6ae14d5de47c7227932c47fec4cdfefd26f09", size = 22420 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/94/35/386550fd60316d1e37eccdda609b074113298f23cef5bddb2049823fe666/dacite-1.9.2-py3-none-any.whl", hash = "sha256:053f7c3f5128ca2e9aceb66892b1a3c8936d02c686e707bee96e19deef4bc4a0", size = 16600 },
+]
+
+[[package]]
 name = "frozenlist"
 version = "1.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -513,6 +522,7 @@ sqs = [
     { name = "aiobotocore" },
 ]
 testing = [
+    { name = "dacite" },
     { name = "hypothesis" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -523,6 +533,7 @@ testing = [
 [package.metadata]
 requires-dist = [
     { name = "aiobotocore", marker = "extra == 'sqs'", specifier = ">=2.0" },
+    { name = "dacite", marker = "extra == 'testing'", specifier = ">=1.9" },
     { name = "hypothesis", marker = "extra == 'testing'", specifier = ">=6.0" },
     { name = "pydantic", specifier = ">=2.0,<3" },
     { name = "pytest", marker = "extra == 'testing'", specifier = ">=8.0" },

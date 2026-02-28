@@ -30,6 +30,7 @@ from planq.enums import ExecutionMode, JsonRpcError
 from planq.exceptions import (
     FeatureNotSupportedError,
     HandlerTimeout,
+    InvalidParamsError,
     MaxRetriesExceeded,
     MethodNotFound,
     ProcessShutdown,
@@ -46,6 +47,10 @@ from planq.models import (
     JsonRpcResponse,
     TaskResult,
     TaskRoute,
+)
+from planq.params import (
+    ParamsConverter,
+    analyze_signature,
 )
 
 if TYPE_CHECKING:
@@ -291,6 +296,7 @@ class PlanqConsumer:
         self._middlewares: list[Middleware] = (
             middlewares if middlewares is not None else [DeadlineMiddleware()]
         )
+        self._params_converter = ParamsConverter()
         self._build_pipeline()
         self._reject_callbacks = []
 
@@ -413,6 +419,7 @@ class PlanqConsumer:
                 grace_period=grace_period,
                 max_retries=max_retries,
                 retry_on=retry_on,
+                param_meta=analyze_signature(func),
             )
             return func
 
@@ -420,10 +427,22 @@ class PlanqConsumer:
 
     handler = task
 
-    def on_reject(self):
-        """Register a callback to be called when a message is rejected."""
+    def on_reject(
+        self,
+    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """Register a callback invoked when a message is rejected.
 
-        def decorator(func):
+        The decorated function receives the :class:`BrokerMessage` and
+        the :class:`RejectMessage` exception that caused rejection.
+
+        Returns:
+            A decorator that registers the callback and returns it
+            unchanged.
+        """
+
+        def decorator(
+            func: Callable[..., Any],
+        ) -> Callable[..., Any]:
             self._reject_callbacks.append(func)
             return func
 
@@ -543,13 +562,18 @@ class PlanqConsumer:
             self._pool.kill_task(task_id, signal.SIGKILL)
             raise HandlerTimeout(time_limit) from e
 
-    async def _execute(self, route: TaskRoute, params: Any) -> Any:
-        args: tuple[Any, ...] = ()
-        kwargs: dict[str, Any] = {}
-        if isinstance(params, list):
-            args = tuple(params)
-        elif isinstance(params, dict):
-            kwargs = params
+    async def _execute(
+        self,
+        route: TaskRoute,
+        params: Any,
+        method: str,
+    ) -> Any:
+        args, kwargs = self._params_converter.convert(
+            signature=route.param_meta,
+            params=params,
+            method=method,
+            dataclass_parser=self._settings.dataclass_parser,
+        )
 
         match route.mode:
             case ExecutionMode.ASYNC:
@@ -623,9 +647,20 @@ class PlanqConsumer:
         handler_exc: Exception | None = None
         result: Any = None
         try:
-            result = await self._execute(route, msg.body.params)
+            result = await self._execute(route, msg.body.params, method)
         except RetryMessage:
             raise  # propagate RetryMessage without modification
+        except InvalidParamsError as exc:
+            if msg.correlation_id is not None and msg.reply_to:
+                return JsonRpcResponse(
+                    id=msg.correlation_id,
+                    error=JsonRpcErrorDetail(
+                        code=JsonRpcError.INVALID_PARAMS,
+                        message=str(exc),
+                        data=exc.errors,
+                    ),
+                )
+            raise  # falls to RejectMessage handling
         except Exception as exc:
             handler_exc = exc
 

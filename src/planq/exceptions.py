@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from planq.types import Seconds
@@ -93,6 +93,11 @@ class MethodNotFound(RejectMessage):
     """Raised when no registered handler exists for a given method name."""
 
     def __init__(self, method: str) -> None:
+        """Initialize with the unresolvable method name.
+
+        Args:
+            method: JSON-RPC method name that has no registered handler.
+        """
         super().__init__(f"No registered handler for method '{method}'")
         self.method = method
 
@@ -101,8 +106,40 @@ class MaxRetriesExceeded(RejectMessage):
     """Raised when a message has reached its maximum number of retries."""
 
     def __init__(self, max_attempts: int, method: str) -> None:
+        """Initialize with the exhausted retry count and method name.
+
+        Args:
+            max_attempts: Total delivery attempts that were made.
+            method: JSON-RPC method name whose retries were exhausted.
+        """
         super().__init__(
             f"Max retries ({max_attempts}) exceeded for method '{method}'"
         )
         self.max_attempts = max_attempts
         self.method = method
+
+
+class InvalidParamsError(RejectMessage):
+    """JSON-RPC params validation failure (-32602).
+
+    Extends ``RejectMessage`` because invalid params are permanent
+    failures (retrying won't fix bad params). Caught explicitly in
+    ``_router_endpoint`` to return a proper ``-32602`` JSON-RPC error.
+    """
+
+    def __init__(
+        self,
+        errors: list[dict[str, Any]],
+        method: str,
+    ) -> None:
+        """Initialize with validation errors and method name.
+
+        Args:
+            errors: List of error dicts with ``loc``, ``msg``,
+                and ``type`` keys describing each validation failure.
+            method: JSON-RPC method name for error context.
+        """
+        self.errors = errors
+        self.method = method
+        summary = "; ".join(e.get("msg", str(e)) for e in errors[:3])
+        super().__init__(f"Invalid params for '{method}': {summary}")

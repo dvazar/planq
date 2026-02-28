@@ -49,6 +49,7 @@ from planq.enums import ExecutionMode, Header, JsonRpcError
 from planq.exceptions import (
     FeatureNotSupportedError,
     HandlerTimeout,
+    InvalidParamsError,
     ProcessShutdown,
     RejectMessage,
     Retry,
@@ -79,6 +80,7 @@ __all__ = [
     "FeatureNotSupportedError",
     "HandlerTimeout",
     "Header",
+    "InvalidParamsError",
     "JsonRpcError",
     "JsonRpcErrorDetail",
     "JsonRpcRequest",

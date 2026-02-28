@@ -476,7 +476,7 @@ class TestExecutionModeAsync:
             return x * 2
 
         route = consumer.routes["test.async"]
-        result = await consumer._execute(route, [21])
+        result = await consumer._execute(route, [21], "test.async")
 
         assert result == 42
 
@@ -504,7 +504,7 @@ class TestExecutionModeAsync:
         route = consumer.routes["test.async_timeout"]
 
         with pytest.raises(HandlerTimeout) as exc_info:
-            await consumer._execute(route, None)
+            await consumer._execute(route, None, "test.async_timeout")
 
         assert exc_info.value.time_limit == 0.05
 
@@ -525,7 +525,7 @@ class TestExecutionModeAsync:
             return "completed"
 
         route = consumer.routes["test.async_no_limit"]
-        result = await consumer._execute(route, None)
+        result = await consumer._execute(route, None, "test.async_no_limit")
 
         assert result == "completed"
 
@@ -547,7 +547,7 @@ class TestExecutionModeThread:
             return x * 2
 
         route = consumer.routes["test.thread"]
-        result = await consumer._execute(route, [21])
+        result = await consumer._execute(route, [21], "test.thread")
         assert result == 42
 
     @pytest.mark.asyncio
@@ -568,7 +568,7 @@ class TestExecutionModeThread:
 
         route = consumer.routes["test.thread_timeout"]
         with pytest.raises(HandlerTimeout):
-            await consumer._execute(route, None)
+            await consumer._execute(route, None, "test.thread_timeout")
 
     @pytest.mark.asyncio
     async def test_thread_mode_without_time_limit(self):
@@ -581,7 +581,7 @@ class TestExecutionModeThread:
             return "done"
 
         route = consumer.routes["test.thread_no_limit"]
-        result = await consumer._execute(route, None)
+        result = await consumer._execute(route, None, "test.thread_no_limit")
         assert result == "done"
 
 
@@ -1873,7 +1873,7 @@ class TestExecutionModeProcess:
         mock_pool.submit.return_value = (cf_future, "task-1")
         consumer._pool = mock_pool
 
-        result = await consumer._execute(route, [21])
+        result = await consumer._execute(route, [21], "test.process")
 
         assert result == 42
         mock_pool.submit.assert_called_once()
@@ -1890,7 +1890,7 @@ class TestExecutionModeProcess:
 
         route = consumer.routes["test.no_pool"]
         with pytest.raises(RuntimeError, match="ProcessPoolExecutor"):
-            await consumer._execute(route, None)
+            await consumer._execute(route, None, "test.no_pool")
 
     @pytest.mark.asyncio
     async def test_windows_platform_with_time_limit_raises_error(self):
@@ -1924,7 +1924,7 @@ class TestExecutionModeProcess:
         # Mock sys.platform to simulate Windows (patch in consumer module)
         with patch("planq.consumer.sys.platform", "win32"):
             with pytest.raises(FeatureNotSupportedError) as exc_info:
-                await consumer._execute(route, None)
+                await consumer._execute(route, None, "test.windows_check")
 
         # Verify error details
         assert "process_time_limit" in str(exc_info.value)

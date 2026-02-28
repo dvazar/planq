@@ -21,7 +21,7 @@ All aliases use Python 3.12 ``type`` statement syntax.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Literal, Type
+from typing import Any, Callable, Literal, Protocol, Type, TypeVar
 
 #: JSON-RPC request/response identifier; ``None`` denotes a notification.
 type JsonRpcId = str | int | None
@@ -41,3 +41,26 @@ type Seconds = float
 #: An exception type or predicate function used to determine whether an
 #: exception should trigger a retry attempt.
 RetryCondition = Type[Exception] | Callable[[Exception], bool]
+
+
+T = TypeVar("T")
+
+
+class DataclassParser(Protocol[T]):
+    """Pluggable parser for deserializing dicts into dataclasses.
+
+    Implement this protocol to integrate third-party libraries like
+    ``dacite`` or ``cattrs`` with the parameter conversion engine.
+    """
+
+    def __call__(self, cls: type[T], data: dict[str, Any], /) -> T:
+        """Convert a raw dict into a dataclass instance.
+
+        Args:
+            cls: The target dataclass type.
+            data: Raw dict of field values.
+
+        Returns:
+            An instance of ``cls`` populated from ``data``.
+        """
+        ...

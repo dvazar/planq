@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Callable
+from typing import Annotated, Any, Callable
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SkipValidation,
+    ValidationInfo,
+    field_validator,
+)
 
 from planq.enums import ExecutionMode
+from planq.params.types import HandlerSignature
 from planq.types import (
+    DataclassParser,
     JsonRpcId,
     JsonRpcParams,
     JsonRpcVersion,
@@ -19,7 +28,11 @@ from planq.types import (
 class ConsumerSettings(BaseModel):
     """Immutable runtime settings for ``PlanqConsumer``."""
 
-    model_config = ConfigDict(frozen=True, strict=True)
+    model_config = ConfigDict(
+        frozen=True,
+        strict=True,
+        arbitrary_types_allowed=True,
+    )
 
     # Maximum number of messages processed concurrently.
     # Must be > 0.
@@ -41,6 +54,13 @@ class ConsumerSettings(BaseModel):
     # Grace period (seconds) between SIGALRM and SIGKILL for timed-out workers.
     # Must be > 0.
     process_timeout_grace_period: float = 5.0
+
+    # Global dataclass parser: (dataclass_type, raw_dict) -> instance.
+    # Used by DataclassResolver when no from_dict classmethod exists.
+    dataclass_parser: Annotated[
+        DataclassParser[Any] | None,
+        SkipValidation(),
+    ] = None
 
     @field_validator("concurrency")
     @classmethod
@@ -66,7 +86,7 @@ class ConsumerSettings(BaseModel):
         "process_timeout_grace_period",
     )
     @classmethod
-    def validate_positive_float(cls, v: float, info) -> float:
+    def validate_positive_float(cls, v: float, info: ValidationInfo) -> float:
         if math.isnan(v):
             raise ValueError(f"{info.field_name} cannot be NaN")
         if math.isinf(v):
@@ -123,6 +143,10 @@ class TaskRoute(BaseModel):
         | None
     ) = None
 
+    # Cached parameter metadata from signature analysis.
+    # Populated automatically by the task() decorator.
+    param_meta: HandlerSignature | None = None
+
     @field_validator("max_retries")
     @classmethod
     def validate_max_retries(cls, v: int | None) -> int | None:
@@ -136,7 +160,7 @@ class TaskRoute(BaseModel):
     @field_validator("time_limit", "grace_period")
     @classmethod
     def validate_positive_optional_float(
-        cls, v: float | None, info
+        cls, v: float | None, info: ValidationInfo
     ) -> float | None:
         if v is not None:
             if math.isnan(v):

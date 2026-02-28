@@ -1,3 +1,9 @@
+"""Structured logging integration for planq.
+
+Configures the ``planq`` logger with :class:`~planq.context.PlanqContextFilter`
+and provides :func:`instrument_logging` to enrich all loggers globally.
+"""
+
 import logging
 from typing import Any
 
