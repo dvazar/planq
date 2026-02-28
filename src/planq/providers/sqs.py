@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Final, override
@@ -11,7 +10,8 @@ from urllib.parse import urlparse
 from aiobotocore.session import AioSession
 
 from planq.broker import BaseBroker
-from planq.enums import Header
+from planq.enums import Header, LogEvent
+from planq.log import get_planq_logger
 from planq.message import BrokerMessage
 from planq.models import JsonRpcRequest, JsonRpcResponse
 from planq.types import Headers
@@ -28,7 +28,7 @@ _SQS_WAIT_SECONDS: Final[int] = 20
 _SQS_MAX_DELAY_SECONDS: Final[int] = 900
 """Maximum ``DelaySeconds`` value supported by SQS (15 minutes)."""
 
-logger = logging.getLogger(__name__)
+logger = get_planq_logger(__name__)
 
 
 class SqsBrokerMessage(BrokerMessage):
@@ -311,12 +311,13 @@ class SqsBroker(BaseBroker):
                         )
                     except Exception as exc:
                         log_ctx = {
+                            "event": LogEvent.POISON_MESSAGE_HANDLING_FAILED,
                             "message_id": raw_msg["MessageId"],
                             "queue_name": queue_name,
                         }
                         logger.error(
-                            "Failed to handle poison message. "
-                            "Message ID: %(message_id)s.",
+                            "Failed to handle poison message."
+                            " Message ID: %(message_id)s.",
                             log_ctx,
                             extra=log_ctx,
                             exc_info=exc,

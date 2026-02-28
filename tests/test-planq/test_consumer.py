@@ -19,6 +19,7 @@ from planq.consumer import (
     _worker_main,
     should_retry,
 )
+from planq.context import _planq_context, get_planq_context
 from planq.enums import ExecutionMode, JsonRpcError
 from planq.exceptions import (
     FeatureNotSupportedError,
@@ -74,6 +75,8 @@ def mock_message():
         msg.headers = headers or {}
         msg.delivery_count = delivery_count
         msg.reply_to = reply_to
+        msg.message_id = "test-msg-id"
+        msg.queue_name = "test-queue"
         msg.enqueued_at = enqueued_at or time.time() - 0.1
         msg.received_at = received_at or time.time()
         msg.ack = AsyncMock()
@@ -638,6 +641,10 @@ class TestErrorHandling:
 
         msg = mock_message(method="test.error", id="123", delivery_count=1)
 
+        _planq_context.set(None)
+        ctx = get_planq_context()
+        ctx.msg = msg
+
         with pytest.raises(RetryMessage):
             await consumer._router_endpoint(msg)
 
@@ -684,6 +691,10 @@ class TestErrorHandling:
             await asyncio.sleep(1.0)  # Exceeds time_limit
 
         msg = mock_message(method="test.timeout", id="123", delivery_count=1)
+
+        _planq_context.set(None)
+        ctx = get_planq_context()
+        ctx.msg = msg
 
         with pytest.raises(RetryMessage):
             await consumer._router_endpoint(msg)
@@ -1006,6 +1017,10 @@ class TestMiddlewareIntegration:
         expired_time = time.time() - 100  # 100 seconds ago
         msg = mock_message(method="test.expired", id="123")
         msg.headers = {"x-expire-at": str(expired_time)}
+
+        _planq_context.set(None)
+        ctx = get_planq_context()
+        ctx.msg = msg
 
         response = await consumer._pipeline(msg)
 
@@ -1642,6 +1657,10 @@ class TestRouterEndpointRetryOn:
 
         msg = mock_message(method="test.match_retry", id=None, delivery_count=1)
 
+        _planq_context.set(None)
+        ctx = get_planq_context()
+        ctx.msg = msg
+
         with pytest.raises(RetryMessage):
             await consumer._router_endpoint(msg)
 
@@ -1733,6 +1752,10 @@ class TestRouterEndpointRetryOn:
             method="test.callable_true", id=None, delivery_count=1
         )
 
+        _planq_context.set(None)
+        ctx = get_planq_context()
+        ctx.msg = msg
+
         with pytest.raises(RetryMessage):
             await consumer._router_endpoint(msg)
 
@@ -1774,6 +1797,10 @@ class TestRouterEndpointRetryOn:
             raise KeyError("will retry")
 
         msg = mock_message(method="test.multi_types", id=None, delivery_count=1)
+
+        _planq_context.set(None)
+        ctx = get_planq_context()
+        ctx.msg = msg
 
         with pytest.raises(RetryMessage):
             await consumer._router_endpoint(msg)
@@ -2141,6 +2168,8 @@ class TestSignalHandlingAndShutdown:
             msg.headers = {}
             msg.delivery_count = 1
             msg.reply_to = None
+            msg.message_id = "test-msg-id"
+            msg.queue_name = "test-queue"
             msg.enqueued_at = time.time() - 0.1
             msg.received_at = time.time()
             msg.ack = AsyncMock()

@@ -380,12 +380,13 @@ class TestOnPoisonMessage:
 
             mock_logger.error.assert_called_once()
             args, kwargs = mock_logger.error.call_args
-            assert "Poison message detected in queue" in args[0]
+            assert "Poison message" in args[0]
+            assert "%(queue_name)r" in args[0]
             assert kwargs["exc_info"] is error
 
     @pytest.mark.asyncio
     async def test_on_poison_message_includes_queue_name(self):
-        """on_poison_message includes queue name in log."""
+        """on_poison_message includes queue name in log_ctx."""
         broker = MinimalBroker("test-dsn")
         raw_body = "test"
         queue = "my-queue"
@@ -397,9 +398,8 @@ class TestOnPoisonMessage:
             )
 
             args, kwargs = mock_logger.error.call_args
-            ctx = args[1]
-            assert ctx["queue_name"] == "my-queue"
-            assert kwargs["extra"]["queue_name"] == "my-queue"
+            log_ctx = args[1]
+            assert log_ctx["queue_name"] == "my-queue"
 
     @pytest.mark.asyncio
     async def test_on_poison_message_calls_get_queue_name(self):
@@ -414,10 +414,10 @@ class TestOnPoisonMessage:
                 "test-msg-id", raw_body, queue, error
             )
 
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
+            args, kwargs = mock_logger.error.call_args
+            log_ctx = args[1]
             # Should be stripped via get_queue_name
-            assert ctx["queue_name"] == "my-queue"
+            assert log_ctx["queue_name"] == "my-queue"
 
     @pytest.mark.asyncio
     async def test_on_poison_message_truncates_long_body(self):
@@ -432,13 +432,13 @@ class TestOnPoisonMessage:
                 "test-msg-id", raw_body, queue, error
             )
 
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
-            snippet = ctx["raw_body_snippet"]
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
+            snippet = extra["raw_body_snippet"]
             assert snippet.startswith("x" * 1000)
             assert "truncated, total size: 1500 bytes" in snippet
-            assert ctx["body_size"] == 1500
-            assert ctx["is_truncated"] is True
+            assert extra["body_size"] == 1500
+            assert extra["is_truncated"] is True
 
     @pytest.mark.asyncio
     async def test_on_poison_message_does_not_truncate_short_body(self):
@@ -453,13 +453,13 @@ class TestOnPoisonMessage:
                 "test-msg-id", raw_body, queue, error
             )
 
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
-            snippet = ctx["raw_body_snippet"]
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
+            snippet = extra["raw_body_snippet"]
             assert snippet == raw_body
             assert "truncated" not in snippet
-            assert ctx["body_size"] == 500
-            assert ctx["is_truncated"] is False
+            assert extra["body_size"] == 500
+            assert extra["is_truncated"] is False
 
     @pytest.mark.asyncio
     async def test_on_poison_message_exactly_1000_chars(self):
@@ -474,13 +474,13 @@ class TestOnPoisonMessage:
                 "test-msg-id", raw_body, queue, error
             )
 
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
-            snippet = ctx["raw_body_snippet"]
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
+            snippet = extra["raw_body_snippet"]
             assert snippet == raw_body
             assert "truncated" not in snippet
-            assert ctx["body_size"] == 1000
-            assert ctx["is_truncated"] is False
+            assert extra["body_size"] == 1000
+            assert extra["is_truncated"] is False
 
     @pytest.mark.asyncio
     async def test_on_poison_message_exactly_1001_chars(self):
@@ -495,13 +495,13 @@ class TestOnPoisonMessage:
                 "test-msg-id", raw_body, queue, error
             )
 
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
-            snippet = ctx["raw_body_snippet"]
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
+            snippet = extra["raw_body_snippet"]
             assert snippet.startswith("x" * 1000)
             assert "truncated, total size: 1001 bytes" in snippet
-            assert ctx["body_size"] == 1001
-            assert ctx["is_truncated"] is True
+            assert extra["body_size"] == 1001
+            assert extra["is_truncated"] is True
 
     @pytest.mark.asyncio
     async def test_on_poison_message_with_bytes_body(self):
@@ -517,12 +517,12 @@ class TestOnPoisonMessage:
             )
 
             mock_logger.error.assert_called_once()
-            args, kwargs = mock_logger.error.call_args
-            ctx = args[1]
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
             # Should be decoded to string
-            assert isinstance(ctx["raw_body_snippet"], str)
-            assert ctx["raw_body_snippet"] == "invalid json bytes"
-            assert ctx["body_size"] == 18  # len(b"invalid json bytes")
+            assert isinstance(extra["raw_body_snippet"], str)
+            assert extra["raw_body_snippet"] == "invalid json bytes"
+            assert extra["body_size"] == 18  # len(b"invalid json bytes")
 
     @pytest.mark.asyncio
     async def test_on_poison_message_with_bytes_truncation(self):
@@ -537,13 +537,13 @@ class TestOnPoisonMessage:
                 "test-msg-id", raw_body, queue, error
             )
 
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
-            snippet = ctx["raw_body_snippet"]
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
+            snippet = extra["raw_body_snippet"]
             assert isinstance(snippet, str)
             assert snippet.startswith("x" * 1000)
             assert "truncated, total size: 1500 bytes" in snippet
-            assert ctx["body_size"] == 1500
+            assert extra["body_size"] == 1500
 
     @pytest.mark.asyncio
     async def test_on_poison_message_with_invalid_utf8_bytes(self):
@@ -560,12 +560,12 @@ class TestOnPoisonMessage:
             )
 
             mock_logger.error.assert_called_once()
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
             # Should use replacement character for invalid bytes
-            assert isinstance(ctx["raw_body_snippet"], str)
+            assert isinstance(extra["raw_body_snippet"], str)
             # The exact replacement depends on decode(errors="replace")
-            assert "invalid utf8" in ctx["raw_body_snippet"]
+            assert "invalid utf8" in extra["raw_body_snippet"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -605,11 +605,11 @@ class TestOnPoisonMessage:
             )
 
             mock_logger.error.assert_called_once()
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
-            assert ctx["raw_body_snippet"] == ""
-            assert ctx["body_size"] == 0
-            assert ctx["is_truncated"] is False
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
+            assert extra["raw_body_snippet"] == ""
+            assert extra["body_size"] == 0
+            assert extra["is_truncated"] is False
 
     @pytest.mark.asyncio
     async def test_on_poison_message_with_empty_bytes_body(self):
@@ -625,11 +625,11 @@ class TestOnPoisonMessage:
             )
 
             mock_logger.error.assert_called_once()
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
-            assert ctx["raw_body_snippet"] == ""
-            assert ctx["body_size"] == 0
-            assert ctx["is_truncated"] is False
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
+            assert extra["raw_body_snippet"] == ""
+            assert extra["body_size"] == 0
+            assert extra["is_truncated"] is False
 
     @pytest.mark.asyncio
     async def test_on_poison_message_with_unicode_string(self):
@@ -644,10 +644,10 @@ class TestOnPoisonMessage:
                 "test-msg-id", raw_body, queue, error
             )
 
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
-            assert ctx["raw_body_snippet"] == raw_body
-            assert ctx["body_size"] == len(raw_body)
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
+            assert extra["raw_body_snippet"] == raw_body
+            assert extra["body_size"] == len(raw_body)
 
     @pytest.mark.asyncio
     async def test_on_poison_message_with_emoji_truncation(self):
@@ -663,11 +663,11 @@ class TestOnPoisonMessage:
                 "test-msg-id", raw_body, queue, error
             )
 
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
             # Should truncate at 1000 characters, not bytes
-            assert ctx["body_size"] == 600  # Character count
-            assert ctx["is_truncated"] is False
+            assert extra["body_size"] == 600  # Character count
+            assert extra["is_truncated"] is False
 
     @pytest.mark.asyncio
     async def test_on_poison_message_with_emoji_over_limit(self):
@@ -682,13 +682,13 @@ class TestOnPoisonMessage:
                 "test-msg-id", raw_body, queue, error
             )
 
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
-            snippet = ctx["raw_body_snippet"]
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
+            snippet = extra["raw_body_snippet"]
             assert snippet.startswith("😀" * 1000)
             assert "truncated, total size: 1500 bytes" in snippet
-            assert ctx["body_size"] == 1500
-            assert ctx["is_truncated"] is True
+            assert extra["body_size"] == 1500
+            assert extra["is_truncated"] is True
 
     @pytest.mark.asyncio
     async def test_on_poison_message_bytes_truncated_mid_utf8(self):
@@ -705,9 +705,9 @@ class TestOnPoisonMessage:
                 "test-msg-id", raw_body, queue, error
             )
 
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
-            snippet = ctx["raw_body_snippet"]
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
+            snippet = extra["raw_body_snippet"]
             # Should decode with replacement character for partial sequence
             assert isinstance(snippet, str)
             assert "truncated, total size: 1200 bytes" in snippet
@@ -728,11 +728,11 @@ class TestOnPoisonMessage:
             )
 
             mock_logger.error.assert_called_once()
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
             # Should decode null bytes as unicode null
-            assert isinstance(ctx["raw_body_snippet"], str)
-            assert ctx["body_size"] == 15
+            assert isinstance(extra["raw_body_snippet"], str)
+            assert extra["body_size"] == 15
 
     @pytest.mark.asyncio
     async def test_on_poison_message_string_with_control_chars(self):
@@ -747,10 +747,10 @@ class TestOnPoisonMessage:
                 "test-msg-id", raw_body, queue, error
             )
 
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
             # Should preserve control characters
-            assert ctx["raw_body_snippet"] == raw_body
+            assert extra["raw_body_snippet"] == raw_body
 
     @pytest.mark.asyncio
     async def test_on_poison_message_truncation_message_format(self):
@@ -765,9 +765,9 @@ class TestOnPoisonMessage:
                 "test-msg-id", raw_body, queue, error
             )
 
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
-            snippet = ctx["raw_body_snippet"]
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
+            snippet = extra["raw_body_snippet"]
             # Verify exact format
             expected_suffix = "... [truncated, total size: 1500 bytes]"
             assert snippet.endswith(expected_suffix)
@@ -786,24 +786,24 @@ class TestOnPoisonMessage:
                 "test-msg-id", raw_body, queue, error
             )
 
-            _, kwargs = mock_logger.error.call_args
+            args, kwargs = mock_logger.error.call_args
+            log_ctx = args[1]
             extra = kwargs["extra"]
-            # Verify all expected keys
-            assert "message_id" in extra
-            assert "queue_name" in extra
+            # log_ctx contains message_id & queue_name
+            assert isinstance(log_ctx["message_id"], str)
+            assert isinstance(log_ctx["queue_name"], str)
+            # Non-filter keys preserved in extra
             assert "body_size" in extra
             assert "is_truncated" in extra
             assert "raw_body_snippet" in extra
             # Verify types
-            assert isinstance(extra["message_id"], str)
-            assert isinstance(extra["queue_name"], str)
             assert isinstance(extra["body_size"], int)
             assert isinstance(extra["is_truncated"], bool)
             assert isinstance(extra["raw_body_snippet"], str)
 
     @pytest.mark.asyncio
     async def test_on_poison_message_logs_message_id(self):
-        """on_poison_message includes message_id in log context."""
+        """on_poison_message includes message_id in log_ctx."""
         broker = MinimalBroker("test-dsn")
         message_id = "poison-msg-12345"
         raw_body = "test body"
@@ -814,13 +814,8 @@ class TestOnPoisonMessage:
             await broker.on_poison_message(message_id, raw_body, queue, error)
 
             args, kwargs = mock_logger.error.call_args
-            ctx = args[1]
-            extra = kwargs["extra"]
-
-            # Verify message_id in both context dict and extra
-            assert ctx["message_id"] == "poison-msg-12345"
-            assert extra["message_id"] == "poison-msg-12345"
-            assert isinstance(extra["message_id"], str)
+            log_ctx = args[1]
+            assert log_ctx["message_id"] == "poison-msg-12345"
 
 
 class TestBaseBrokerContextManager:
@@ -1079,19 +1074,22 @@ class TestBaseBrokerPropertyBased:
             assert kwargs["exc_info"] is error
 
             # Verify context structure
-            ctx = args[1]
-            assert isinstance(ctx["queue_name"], str)
-            assert isinstance(ctx["body_size"], int)
-            assert isinstance(ctx["is_truncated"], bool)
-            assert isinstance(ctx["raw_body_snippet"], str)
+            log_ctx = args[1]
+            extra = kwargs["extra"]
+            # log_ctx contains message_id & queue_name
+            assert isinstance(log_ctx["queue_name"], str)
+            assert isinstance(log_ctx["message_id"], str)
+            assert isinstance(extra["body_size"], int)
+            assert isinstance(extra["is_truncated"], bool)
+            assert isinstance(extra["raw_body_snippet"], str)
 
             # Verify truncation logic
             body_size = len(raw_body)
             if body_size > 1000:
-                assert ctx["is_truncated"] is True
-                assert "truncated" in ctx["raw_body_snippet"]
+                assert extra["is_truncated"] is True
+                assert "truncated" in extra["raw_body_snippet"]
             else:
-                assert ctx["is_truncated"] is False
+                assert extra["is_truncated"] is False
 
     @given(st.integers(min_value=0, max_value=2500))
     @pytest.mark.asyncio
@@ -1107,20 +1105,20 @@ class TestBaseBrokerPropertyBased:
                 "test-msg-id", raw_body, queue, error
             )
 
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
-            snippet = ctx["raw_body_snippet"]
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
+            snippet = extra["raw_body_snippet"]
 
             # Verify truncation invariant
             if length > 1000:
                 assert snippet.startswith("x" * 1000)
                 assert f"truncated, total size: {length} bytes" in snippet
-                assert ctx["is_truncated"] is True
+                assert extra["is_truncated"] is True
             else:
                 assert snippet == raw_body
                 assert "truncated" not in snippet
-                assert ctx["is_truncated"] is False
-            assert ctx["body_size"] == length
+                assert extra["is_truncated"] is False
+            assert extra["body_size"] == length
 
     @given(st.integers(min_value=0, max_value=2500))
     @pytest.mark.asyncio
@@ -1136,9 +1134,9 @@ class TestBaseBrokerPropertyBased:
                 "test-msg-id", raw_body, queue, error
             )
 
-            args, _ = mock_logger.error.call_args
-            ctx = args[1]
-            snippet = ctx["raw_body_snippet"]
+            _, kwargs = mock_logger.error.call_args
+            extra = kwargs["extra"]
+            snippet = extra["raw_body_snippet"]
 
             # Should be decoded to string
             assert isinstance(snippet, str)
@@ -1147,9 +1145,9 @@ class TestBaseBrokerPropertyBased:
             if length > 1000:
                 assert snippet.startswith("x" * 1000)
                 assert f"truncated, total size: {length} bytes" in snippet
-                assert ctx["is_truncated"] is True
+                assert extra["is_truncated"] is True
             else:
                 assert snippet == "x" * length
                 assert "truncated" not in snippet
-                assert ctx["is_truncated"] is False
-            assert ctx["body_size"] == length
+                assert extra["is_truncated"] is False
+            assert extra["body_size"] == length

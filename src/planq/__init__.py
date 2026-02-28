@@ -45,7 +45,7 @@ Control flow exceptions:
 from planq.broker import BaseBroker
 from planq.consumer import PlanqConsumer
 from planq.context import PlanqContext, get_planq_context
-from planq.enums import ExecutionMode, Header, JsonRpcError
+from planq.enums import ExecutionMode, Header, JsonRpcError, LogEvent
 from planq.exceptions import (
     FeatureNotSupportedError,
     HandlerTimeout,
@@ -55,7 +55,7 @@ from planq.exceptions import (
     Retry,
     RetryMessage,
 )
-from planq.log import instrument_logging
+from planq.log import get_planq_logger, instrument_logging
 from planq.message import BrokerMessage
 from planq.middleware import (
     DeadlineMiddleware,
@@ -82,6 +82,7 @@ __all__ = [
     "Header",
     "InvalidParamsError",
     "JsonRpcError",
+    "LogEvent",
     "JsonRpcErrorDetail",
     "JsonRpcRequest",
     "JsonRpcResponse",
@@ -94,5 +95,6 @@ __all__ = [
     "TaskResult",
     "TaskRoute",
     "get_planq_context",
+    "get_planq_logger",
     "instrument_logging",
 ]

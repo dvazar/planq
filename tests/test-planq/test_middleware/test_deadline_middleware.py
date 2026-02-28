@@ -9,6 +9,7 @@ import pytest
 import time_machine
 from hypothesis import given
 
+from planq.context import get_planq_context
 from planq.enums import Header, JsonRpcError
 from planq.middleware import DeadlineMiddleware, Middleware
 
@@ -201,6 +202,8 @@ class TestDeadlineMiddlewareBoundaryCases:
         self, mock_broker_message, mock_call_next
     ):
         """Expired request returns JsonRpcResponse with error."""
+        ctx = get_planq_context()
+        ctx.msg = mock_broker_message
         middleware = DeadlineMiddleware()
         current_time = time.time()
         expire_at = current_time - 1.0
@@ -221,6 +224,8 @@ class TestDeadlineMiddlewareBoundaryCases:
         self, mock_broker_message, mock_call_next
     ):
         """Expired notification returns None."""
+        ctx = get_planq_context()
+        ctx.msg = mock_broker_message
         middleware = DeadlineMiddleware()
         current_time = time.time()
         expire_at = current_time - 1.0
@@ -270,6 +275,8 @@ class TestDeadlineMiddlewareBoundaryCases:
         self, mock_broker_message, mock_call_next
     ):
         """Message expired long ago is dropped."""
+        ctx = get_planq_context()
+        ctx.msg = mock_broker_message
         middleware = DeadlineMiddleware()
         current_time = time.time()
         expire_at = current_time - 86400 * 365
@@ -288,6 +295,8 @@ class TestDeadlineMiddlewareBoundaryCases:
         self, mock_broker_message, mock_call_next
     ):
         """Message expired by milliseconds is dropped."""
+        ctx = get_planq_context()
+        ctx.msg = mock_broker_message
         middleware = DeadlineMiddleware()
         current_time = time.time()
         expire_at = current_time - 0.001
@@ -345,6 +354,8 @@ class TestDeadlineMiddlewareLeewayBoundary:
         self, mock_broker_message, mock_call_next
     ):
         """Message expired by more than leeway is dropped."""
+        ctx = get_planq_context()
+        ctx.msg = mock_broker_message
         middleware = DeadlineMiddleware(leeway=2.0)
         current_time = time.time()
         expire_at = current_time - 2.1
@@ -379,6 +390,8 @@ class TestDeadlineMiddlewareLeewayBoundary:
         self, mock_broker_message, mock_call_next
     ):
         """Zero leeway preserves strict deadline enforcement."""
+        ctx = get_planq_context()
+        ctx.msg = mock_broker_message
         middleware = DeadlineMiddleware(leeway=0.0)
         current_time = time.time()
         expire_at = current_time - 0.001
@@ -420,6 +433,8 @@ class TestDeadlineMiddlewareNoBrokerOps:
         self, mock_broker_message, mock_call_next
     ):
         """Does not call msg.reject() when expired."""
+        ctx = get_planq_context()
+        ctx.msg = mock_broker_message
         middleware = DeadlineMiddleware()
         current_time = time.time()
         expire_at = current_time - 10.0
@@ -567,6 +582,8 @@ class TestDeadlineMiddlewareTimeMocking:
         self, mock_broker_message, mock_call_next
     ):
         """Deadline check works correctly with frozen time."""
+        ctx = get_planq_context()
+        ctx.msg = mock_broker_message
         middleware = DeadlineMiddleware()
         current_time = time.time()
         expire_at = current_time - 1.0
@@ -584,6 +601,8 @@ class TestDeadlineMiddlewareTimeMocking:
         self, mock_broker_message, mock_call_next
     ):
         """Deadline check works as time progresses."""
+        ctx = get_planq_context()
+        ctx.msg = mock_broker_message
         middleware = DeadlineMiddleware()
 
         with time_machine.travel("2025-01-15 12:00:00", tick=False):
@@ -652,33 +671,42 @@ class TestDeadlineMiddlewareIntegration:
         middleware = DeadlineMiddleware()
         current_time = time.time()
         call_next = AsyncMock(return_value=None)
+        ctx = get_planq_context()
 
         # Message 1: Not expired
         msg1 = MagicMock(spec=BrokerMessage)
         msg1.headers = {Header.EXPIRE_AT: str(current_time + 100)}
         msg1.body = JsonRpcRequest(method="test.method", params={}, id="msg1")
         msg1.correlation_id = "msg1"
+        msg1.message_id = "test-msg-id"
+        msg1.queue_name = "test-queue"
 
         # Message 2: Expired (request)
         msg2 = MagicMock(spec=BrokerMessage)
         msg2.headers = {Header.EXPIRE_AT: str(current_time - 10)}
         msg2.body = JsonRpcRequest(method="test.method", params={}, id="msg2")
         msg2.correlation_id = "msg2"
+        msg2.message_id = "test-msg-id"
+        msg2.queue_name = "test-queue"
 
         # Message 3: No deadline
         msg3 = MagicMock(spec=BrokerMessage)
         msg3.headers = {}
         msg3.body = JsonRpcRequest(method="test.method", params={}, id="msg3")
         msg3.correlation_id = "msg3"
+        msg3.message_id = "test-msg-id"
+        msg3.queue_name = "test-queue"
 
         # Process msg1: should delegate
         call_next.reset_mock()
+        ctx.msg = msg1
         result1 = await middleware(msg1, call_next)
         assert result1 is None
         call_next.assert_called_once()
 
         # Process msg2: should return error
         call_next.reset_mock()
+        ctx.msg = msg2
         result2 = await middleware(msg2, call_next)
         assert result2 is not None
         assert result2.error is not None
@@ -687,6 +715,7 @@ class TestDeadlineMiddlewareIntegration:
 
         # Process msg3: should delegate
         call_next.reset_mock()
+        ctx.msg = msg3
         result3 = await middleware(msg3, call_next)
         assert result3 is None
         call_next.assert_called_once()
@@ -726,33 +755,42 @@ class TestDeadlineMiddlewareLeewayIntegration:
         middleware = DeadlineMiddleware(leeway=2.0)
         current_time = time.time()
         call_next = AsyncMock(return_value=None)
+        ctx = get_planq_context()
 
         # Message 1: Expired by 1s (within leeway)
         msg1 = MagicMock(spec=BrokerMessage)
         msg1.headers = {Header.EXPIRE_AT: str(current_time - 1.0)}
         msg1.body = JsonRpcRequest(method="test.method", params={}, id="msg1")
         msg1.correlation_id = "msg1"
+        msg1.message_id = "test-msg-id"
+        msg1.queue_name = "test-queue"
 
         # Message 2: Expired by 3s (beyond leeway)
         msg2 = MagicMock(spec=BrokerMessage)
         msg2.headers = {Header.EXPIRE_AT: str(current_time - 3.0)}
         msg2.body = JsonRpcRequest(method="test.method", params={}, id="msg2")
         msg2.correlation_id = "msg2"
+        msg2.message_id = "test-msg-id"
+        msg2.queue_name = "test-queue"
 
         # Message 3: Not expired
         msg3 = MagicMock(spec=BrokerMessage)
         msg3.headers = {Header.EXPIRE_AT: str(current_time + 100)}
         msg3.body = JsonRpcRequest(method="test.method", params={}, id="msg3")
         msg3.correlation_id = "msg3"
+        msg3.message_id = "test-msg-id"
+        msg3.queue_name = "test-queue"
 
         # Process msg1: should delegate (within leeway)
         call_next.reset_mock()
+        ctx.msg = msg1
         result1 = await middleware(msg1, call_next)
         assert result1 is None
         call_next.assert_called_once()
 
         # Process msg2: should return error (beyond leeway)
         call_next.reset_mock()
+        ctx.msg = msg2
         result2 = await middleware(msg2, call_next)
         assert result2 is not None
         assert result2.error is not None
@@ -760,6 +798,7 @@ class TestDeadlineMiddlewareLeewayIntegration:
 
         # Process msg3: should delegate (not expired)
         call_next.reset_mock()
+        ctx.msg = msg3
         result3 = await middleware(msg3, call_next)
         assert result3 is None
         call_next.assert_called_once()
@@ -789,8 +828,11 @@ class TestDeadlineMiddlewarePropertyBased:
     @given(expire_at=valid_expire_at_values())
     async def test_deadline_check_with_random_timestamps(self, expire_at):
         """Deadline check handles random expire_at values correctly."""
+        from planq.context import _planq_context
         from planq.message import BrokerMessage
         from planq.models import JsonRpcRequest
+
+        _planq_context.set(None)
 
         mock_msg = MagicMock(spec=BrokerMessage)
         mock_msg.headers = {Header.EXPIRE_AT: str(expire_at)}
@@ -798,6 +840,11 @@ class TestDeadlineMiddlewarePropertyBased:
             method="test.method", params={}, id="test-123"
         )
         mock_msg.correlation_id = "test-123"
+        mock_msg.message_id = "test-msg-id"
+        mock_msg.queue_name = "test-queue"
+
+        ctx = get_planq_context()
+        ctx.msg = mock_msg
 
         call_next = AsyncMock(return_value=None)
         middleware = DeadlineMiddleware()

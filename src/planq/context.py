@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
+from collections import ChainMap
 from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
@@ -39,6 +41,10 @@ class PlanqContext:
         self.max_attempts: int | None = None
         self.broker_latency: Seconds | None = None
         self.internal_latency: Seconds | None = None
+        self.rpc_duration: Seconds | None = None
+        self.rpc_cpu: Seconds | None = None
+        self.pipeline_duration: Seconds | None = None
+        self.pipeline_cpu: Seconds | None = None
 
         self._stop_event = threading.Event()
 
@@ -93,13 +99,14 @@ class PlanqContextFilter(logging.Filter):
             not available (e.g., outside handler execution).
     """
 
-    def __init__(self, default_value: str | None = "-") -> None:
+    def __init__(self, default_value: str | None = None) -> None:
         """Initialize with a placeholder for missing context fields.
 
         Args:
-            default_value: String used when a context field is not
-                available (e.g. outside handler execution). Defaults
-                to ``"-"``.
+            default_value: Value used when a string context field is
+                not available (e.g. outside handler execution).
+                Defaults to ``None``. Numeric fields always default
+                to ``None`` regardless of this setting.
         """
         super().__init__()
         self.default_value = default_value
@@ -113,6 +120,9 @@ class PlanqContextFilter(logging.Filter):
         Returns:
             Always ``True`` (never suppresses records).
         """
+        record.process_id = os.getpid()
+        record.thread_id = threading.get_ident()
+
         ctx = get_planq_context()
 
         if (msg := ctx.msg) is not None:
@@ -123,45 +133,33 @@ class PlanqContextFilter(logging.Filter):
             else:
                 record.correlation_id = self.default_value
             record.method = msg.body.method
-            record.attempt = msg.delivery_count
+            record.current_attempt = msg.delivery_count
             record.reply_to = msg.reply_to or self.default_value
-            record.planq_headers = msg.headers
-        else:
-            record.queue_name = self.default_value
-            record.message_id = self.default_value
-            record.correlation_id = self.default_value
-            record.method = self.default_value
-            record.attempt = self.default_value
-            record.reply_to = self.default_value
-            record.planq_headers = {}
+            record.headers = msg.headers
 
         if (route := ctx.route) is not None:
             record.handler = route.handler.__qualname__
             record.execution_mode = route.mode.value
-            record.time_limit = (
-                route.time_limit
-                if route.time_limit is not None
-                else self.default_value
-            )
-        else:
-            record.handler = self.default_value
-            record.execution_mode = self.default_value
-            record.time_limit = self.default_value
+            record.time_limit_seconds = route.time_limit
 
-        record.max_attempts = (
-            ctx.max_attempts
-            if ctx.max_attempts is not None
-            else self.default_value
-        )
-        record.broker_latency_sec = (
-            ctx.broker_latency
-            if ctx.broker_latency is not None
-            else self.default_value
-        )
-        record.internal_latency_sec = (
-            ctx.internal_latency
-            if ctx.internal_latency is not None
-            else self.default_value
-        )
+        if ctx.max_attempts is not None:
+            record.max_attempts = ctx.max_attempts
+
+        if ctx.broker_latency is not None:
+            record.broker_latency_seconds = ctx.broker_latency
+            record.internal_latency_seconds = ctx.internal_latency
+
+        if ctx.rpc_duration is not None:
+            record.rpc_duration_seconds = ctx.rpc_duration
+            record.rpc_cpu_seconds = ctx.rpc_cpu
+
+        if ctx.pipeline_duration is not None:
+            record.pipeline_duration_seconds = ctx.pipeline_duration
+            record.pipeline_cpu_seconds = ctx.pipeline_cpu
+
+        if isinstance(record.args, dict) and not isinstance(
+            record.args, ChainMap
+        ):
+            record.args = ChainMap(record.args, vars(record))
 
         return True

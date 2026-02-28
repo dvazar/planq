@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from collections import ChainMap
 from typing import override
 
 import pytest
@@ -229,10 +230,10 @@ class TestPlanqContextFilterConstruction:
         assert filter_instance.default_value == "NONE"
 
     def test_construction_with_default_default(self):
-        """PlanqContextFilter uses '-' as default_value by default."""
+        """PlanqContextFilter uses None as default_value by default."""
         filter_instance = PlanqContextFilter()
 
-        assert filter_instance.default_value == "-"
+        assert filter_instance.default_value is None
 
 
 class TestPlanqContextFilterWithFullContext:
@@ -297,23 +298,23 @@ class TestPlanqContextFilterWithFullContext:
         assert record.message_id == "broker-msg-123"
         assert record.correlation_id == "req-123"
         assert record.method == "test.method"
-        assert record.attempt == 2
+        assert record.current_attempt == 2
         assert record.reply_to == "reply-queue"
-        assert record.planq_headers == {"x-custom": "header-value"}
+        assert record.headers == {"x-custom": "header-value"}
         # Handler qualname includes the enclosing method
         assert record.handler.endswith("dummy_handler")
         assert record.execution_mode == "async"
-        assert record.time_limit == 30.0
+        assert record.time_limit_seconds == 30.0
         assert record.max_attempts == 4
-        assert record.broker_latency_sec == 1.5
-        assert record.internal_latency_sec == 0.25
+        assert record.broker_latency_seconds == 1.5
+        assert record.internal_latency_seconds == 0.25
 
 
 class TestPlanqContextFilterWithPartialContext:
     """Test PlanqContextFilter with partially populated context."""
 
     def test_filter_with_no_message(self):
-        """filter() uses default_value when msg is None."""
+        """filter() omits message fields when ctx.msg is None."""
         ctx = get_planq_context()
         ctx.msg = None
 
@@ -330,16 +331,16 @@ class TestPlanqContextFilterWithPartialContext:
 
         filter_instance.filter(record)
 
-        assert record.queue_name == "MISSING"
-        assert record.message_id == "MISSING"
-        assert record.correlation_id == "MISSING"
-        assert record.method == "MISSING"
-        assert record.attempt == "MISSING"
-        assert record.reply_to == "MISSING"
-        assert record.planq_headers == {}
+        assert not hasattr(record, "queue_name")
+        assert not hasattr(record, "message_id")
+        assert not hasattr(record, "correlation_id")
+        assert not hasattr(record, "method")
+        assert not hasattr(record, "current_attempt")
+        assert not hasattr(record, "reply_to")
+        assert not hasattr(record, "headers")
 
     def test_filter_with_no_route(self):
-        """filter() uses default_value when route is None."""
+        """filter() omits route fields when ctx.route is None."""
         ctx = get_planq_context()
         ctx.route = None
 
@@ -356,9 +357,9 @@ class TestPlanqContextFilterWithPartialContext:
 
         filter_instance.filter(record)
 
-        assert record.handler == "NONE"
-        assert record.execution_mode == "NONE"
-        assert record.time_limit == "NONE"
+        assert not hasattr(record, "handler")
+        assert not hasattr(record, "execution_mode")
+        assert not hasattr(record, "time_limit_seconds")
 
     def test_filter_with_none_correlation_id(self):
         """filter() uses default_value when correlation_id is None."""
@@ -422,7 +423,7 @@ class TestPlanqContextFilterWithPartialContext:
         assert record.reply_to == "NO-REPLY"
 
     def test_filter_with_none_time_limit(self):
-        """filter() uses default_value when time_limit is None."""
+        """filter() uses None when time_limit is None."""
         ctx = get_planq_context()
 
         def dummy_handler():
@@ -450,7 +451,7 @@ class TestPlanqContextFilterWithPartialContext:
 
         filter_instance.filter(record)
 
-        assert record.time_limit == "UNLIMITED"
+        assert record.time_limit_seconds is None
 
 
 class TestPlanqContextFilterEdgeCases:
@@ -501,4 +502,110 @@ class TestPlanqContextFilterEdgeCases:
 
         filter_instance.filter(record)
 
-        assert record.planq_headers == {}
+        assert record.headers == {}
+
+
+class TestPlanqContextFilterChainMap:
+    """Test ChainMap wrapping of record.args."""
+
+    def test_filter_applies_chainmap_for_dict_args(self):
+        """filter() wraps dict args in ChainMap with record attrs."""
+        ctx = get_planq_context()
+        body = JsonRpcRequest(method="test.method", id="req-1")
+        msg = _TestBrokerMessage(
+            raw=None,
+            body=body,
+            headers={},
+            received_at=1234567890.0,
+            queue_name="test-queue",
+        )
+        ctx.msg = msg
+
+        filter_instance = PlanqContextFilter()
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg="%(method)s called",
+            args=(),
+            exc_info=None,
+        )
+        # Simulate what logging does: set args to a dict
+        record.args = {"method": "explicit"}
+
+        filter_instance.filter(record)
+
+        assert isinstance(record.args, ChainMap)
+        # Explicit dict value takes priority
+        assert record.args["method"] == "explicit"
+        # Record attrs are accessible as fallback
+        assert record.args["queue_name"] == "test-queue"
+
+    def test_filter_skips_chainmap_for_non_dict_args(self):
+        """filter() does not wrap tuple args in ChainMap."""
+        filter_instance = PlanqContextFilter()
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg="value is %s",
+            args=("hello",),
+            exc_info=None,
+        )
+
+        filter_instance.filter(record)
+
+        assert record.args == ("hello",)
+        assert not isinstance(record.args, ChainMap)
+
+    def test_filter_skips_chainmap_for_none_args(self):
+        """filter() does not wrap None args in ChainMap."""
+        filter_instance = PlanqContextFilter()
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg="no args",
+            args=None,
+            exc_info=None,
+        )
+
+        filter_instance.filter(record)
+
+        assert record.args is None
+
+    def test_filter_chainmap_idempotent(self):
+        """Double-applying filter does not double-wrap ChainMap."""
+        ctx = get_planq_context()
+        body = JsonRpcRequest(method="test.method", id="req-1")
+        msg = _TestBrokerMessage(
+            raw=None,
+            body=body,
+            headers={},
+            received_at=1234567890.0,
+            queue_name="test-queue",
+        )
+        ctx.msg = msg
+
+        filter_instance = PlanqContextFilter()
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg="%(method)s called",
+            args=(),
+            exc_info=None,
+        )
+        # Simulate what logging does: set args to a dict
+        record.args = {"method": "explicit"}
+
+        filter_instance.filter(record)
+        filter_instance.filter(record)
+
+        assert isinstance(record.args, ChainMap)
+        # Should still have exactly 2 maps, not 3
+        assert len(record.args.maps) == 2

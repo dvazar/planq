@@ -28,6 +28,8 @@ def mock_msg():
         msg.headers = {}
         msg.delivery_count = delivery_count
         msg.reply_to = reply_to
+        msg.message_id = "test-msg-id"
+        msg.queue_name = "test-queue"
         msg.enqueued_at = time.time() - 0.1
         msg.received_at = time.time()
         msg.ack = AsyncMock()

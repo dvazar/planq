@@ -7,9 +7,20 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from hypothesis import strategies as st
 
+from planq.context import _planq_context
 from planq.message import BrokerMessage
 from planq.middleware import Middleware
-from planq.models import JsonRpcRequest, JsonRpcResponse
+from planq.models import JsonRpcRequest
+
+# === Context Reset ===
+
+
+@pytest.fixture(autouse=True)
+def _reset_planq_context():
+    """Reset PlanqContext before each test to avoid pollution."""
+    _planq_context.set(None)
+    yield
+    _planq_context.set(None)
 
 
 # === Mock Fixtures ===
@@ -28,6 +39,8 @@ def mock_broker_message():
     msg.correlation_id = "test-123"
     msg.delivery_count = 1
     msg.reply_to = None
+    msg.message_id = "test-msg-id"
+    msg.queue_name = "test-queue"
     msg.raw_message = {"native": "data"}
     msg.ack = AsyncMock()
     msg.nack = AsyncMock()

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import multiprocessing
 import os
 import signal
@@ -26,7 +25,7 @@ from typing import (
 )
 
 from planq.context import get_planq_context
-from planq.enums import ExecutionMode, JsonRpcError
+from planq.enums import ExecutionMode, JsonRpcError, LogEvent
 from planq.exceptions import (
     FeatureNotSupportedError,
     HandlerTimeout,
@@ -37,6 +36,7 @@ from planq.exceptions import (
     RejectMessage,
     RetryMessage,
 )
+from planq.log import get_planq_logger
 from planq.middleware import (
     DeadlineMiddleware,
     Middleware,
@@ -65,7 +65,7 @@ if TYPE_CHECKING:
 P = ParamSpec("P")  # Captures function parameters (*args, **kwargs)
 T = TypeVar("T")  # Captures return type
 
-logger = logging.getLogger(__name__)
+logger = get_planq_logger(__name__)
 
 DEFAULT_MAX_RETRIES: Final[int] = 3
 
@@ -109,8 +109,10 @@ def should_retry(
                     return True
             except Exception as predicate_exc:
                 logger.error(
-                    f"Error evaluating retry predicate: {predicate_exc}",
+                    "Error evaluating retry predicate: %s",
+                    predicate_exc,
                     exc_info=predicate_exc,
+                    extra={"event": LogEvent.RETRY_PREDICATE_ERROR},
                 )
                 return False
 
@@ -177,7 +179,9 @@ class _ProcessPool:
                         self._active_pids[task_id] = pid
             except Exception as exc:
                 logger.error(
-                    f"{type(self).__name__} monitor error", exc_info=exc
+                    "Process pool monitor error",
+                    exc_info=exc,
+                    extra={"event": LogEvent.PROCESS_MONITOR_ERROR},
                 )
 
     def submit(
@@ -306,8 +310,8 @@ class PlanqConsumer:
         name: str,
         mode: Literal[ExecutionMode.ASYNC] = ...,
         *,
-        time_limit: float | None = None,
-        grace_period: float | None = None,
+        time_limit: Seconds | None = None,
+        grace_period: Seconds | None = None,
         max_retries: int | None = None,
         retry_on: (
             RetryCondition
@@ -323,8 +327,8 @@ class PlanqConsumer:
         name: str,
         mode: Literal[ExecutionMode.THREAD, ExecutionMode.PROCESS],
         *,
-        time_limit: float | None = None,
-        grace_period: float | None = None,
+        time_limit: Seconds | None = None,
+        grace_period: Seconds | None = None,
         max_retries: int | None = None,
         retry_on: (
             RetryCondition
@@ -340,8 +344,8 @@ class PlanqConsumer:
         name: str,
         mode: ExecutionMode = ...,
         *,
-        time_limit: float | None = None,
-        grace_period: float | None = None,
+        time_limit: Seconds | None = None,
+        grace_period: Seconds | None = None,
         max_retries: int | None = None,
         retry_on: (
             RetryCondition
@@ -358,8 +362,8 @@ class PlanqConsumer:
         name: str,
         mode: ExecutionMode = ExecutionMode.ASYNC,
         *,
-        time_limit: float | None = None,
-        grace_period: float | None = None,
+        time_limit: Seconds | None = None,
+        grace_period: Seconds | None = None,
         max_retries: int | None = None,
         retry_on: (
             RetryCondition
@@ -463,9 +467,15 @@ class PlanqConsumer:
 
         for callback, result in zip(self._reject_callbacks, results):
             if isinstance(result, Exception):
+                log_ctx = {
+                    "event": LogEvent.REJECT_CALLBACK_ERROR,
+                    "callback": callback.__qualname__,
+                }
                 logger.error(
-                    f"Reject callback '{callback.__qualname__}' failed",
+                    "Reject callback %(callback)r failed",
+                    log_ctx,
                     exc_info=result,
+                    extra=log_ctx,
                 )
 
     def _calculate_backoff(self, delivery_count: int) -> Seconds:
@@ -575,32 +585,42 @@ class PlanqConsumer:
             dataclass_parser=self._settings.dataclass_parser,
         )
 
-        match route.mode:
-            case ExecutionMode.ASYNC:
-                return await self._execute_async(
-                    handler=route.handler,
-                    args=args,
-                    kwargs=kwargs,
-                    time_limit=route.time_limit,
-                )
-            case ExecutionMode.THREAD:
-                return await self._execute_thread(
-                    handler=route.handler,
-                    args=args,
-                    kwargs=kwargs,
-                    time_limit=route.time_limit,
-                )
-            case ExecutionMode.PROCESS:
-                return await self._execute_process(
-                    handler=route.handler,
-                    args=args,
-                    kwargs=kwargs,
-                    time_limit=route.time_limit,
-                    grace_period=route.grace_period,
-                )
-            case _:  # pragma: no cover
-                # Unreachable: all ExecutionMode values handled above
-                raise AssertionError(f"Unknown execution mode: {route.mode}")
+        start_perf = time.perf_counter()
+        start_process = time.process_time()
+
+        try:
+            match route.mode:
+                case ExecutionMode.ASYNC:
+                    return await self._execute_async(
+                        handler=route.handler,
+                        args=args,
+                        kwargs=kwargs,
+                        time_limit=route.time_limit,
+                    )
+                case ExecutionMode.THREAD:
+                    return await self._execute_thread(
+                        handler=route.handler,
+                        args=args,
+                        kwargs=kwargs,
+                        time_limit=route.time_limit,
+                    )
+                case ExecutionMode.PROCESS:
+                    return await self._execute_process(
+                        handler=route.handler,
+                        args=args,
+                        kwargs=kwargs,
+                        time_limit=route.time_limit,
+                        grace_period=route.grace_period,
+                    )
+                case _:  # pragma: no cover
+                    # Unreachable: all ExecutionMode values handled above
+                    raise AssertionError(
+                        f"Unknown execution mode: {route.mode}"
+                    )
+        finally:
+            ctx = get_planq_context()
+            ctx.rpc_duration = round(time.perf_counter() - start_perf, 4)
+            ctx.rpc_cpu = round(time.process_time() - start_process, 4)
 
     def _build_pipeline(self) -> None:
         """Build the middleware chain ending at _router_endpoint."""
@@ -677,12 +697,13 @@ class PlanqConsumer:
 
             if msg.delivery_count < max_attempts:
                 log_ctx = {
+                    "event": LogEvent.HANDLER_RETRYING,
                     "error_type": type(handler_exc).__name__,
                     "error_msg": str(handler_exc),
                 }
                 logger.warning(
-                    f"Message processing failed for method '{method}'. "
-                    f"Retrying. Reason: %(error_type)s(%(error_msg)r)",
+                    "Message processing failed for method %(method)r."
+                    " Retrying. Reason: %(error_type)s(%(error_msg)r)",
                     log_ctx,
                     extra=log_ctx,
                 )
@@ -737,7 +758,13 @@ class PlanqConsumer:
         ctx.internal_latency = round(time.time() - msg.received_at, 3)
 
         try:
+            start_perf = time.perf_counter()
+            start_process = time.process_time()
+
             response = await self._pipeline(msg)
+
+            ctx.pipeline_duration = round(time.perf_counter() - start_perf, 4)
+            ctx.pipeline_cpu = round(time.process_time() - start_process, 4)
 
             if (
                 response is not None
@@ -752,13 +779,17 @@ class PlanqConsumer:
                     )
                 except Exception as exc:
                     backoff = self._calculate_backoff(msg.delivery_count)
+                    log_ctx = {
+                        "event": LogEvent.PUBLISH_RESPONSE_FAILED,
+                        "delay_seconds": backoff,
+                    }
                     logger.error(
-                        "Failed to publish response to '%(reply_to)s' "
-                        "for method '%(method)s'. "
-                        "Message ID: %(message_id)s. "
-                        f"Nacking with {backoff:.1f}s delay.",
-                        extra={"delay_seconds": backoff},
+                        "Failed to publish response to %(reply_to)r"
+                        " for method %(method)r. Message ID: %(message_id)s."
+                        " Nacking with %(delay_seconds).1fs delay.",
+                        log_ctx,
                         exc_info=exc,
+                        extra=log_ctx,
                     )
                     await msg.nack(backoff)
                     return
@@ -768,16 +799,29 @@ class PlanqConsumer:
         except RetryMessage as exc:
             if (backoff := exc.delay) is None:
                 backoff = self._calculate_backoff(msg.delivery_count)
+            log_ctx = {
+                "event": LogEvent.MESSAGE_REQUEUEING,
+                "delay_seconds": backoff,
+            }
             logger.info(
-                "Message ID: %(message_id)s. Requeueing for retry. "
-                "Method: '%(method)s', Attempt: %(attempt)d/%(max_attempts)d, "
-                f"Delay: {backoff:.1f}s.",
+                "Message ID: %(message_id)s. Requeueing for retry."
+                " Method: %(method)r,"
+                " Attempt: %(current_attempt)d/%(max_attempts)d,"
+                " Delay: %(delay_seconds).1fs.",
+                log_ctx,
+                extra=log_ctx,
             )
             await msg.nack(backoff)
 
         except RejectMessage as exc:
+            log_ctx = {
+                "event": LogEvent.MESSAGE_REJECTING,
+                "reason": str(exc),
+            }
             logger.error(
-                f"Message ID: %(message_id)s. Rejecting. {str(exc)}",
+                "Message ID: %(message_id)s. Rejecting. %(reason)s",
+                log_ctx,
+                extra=log_ctx,
                 exc_info=exc,
             )
             await self._execute_reject_callbacks(msg, exc)
@@ -785,11 +829,17 @@ class PlanqConsumer:
 
         except Exception as exc:
             backoff = self._calculate_backoff(msg.delivery_count)
+            log_ctx = {
+                "event": LogEvent.PIPELINE_ERROR,
+                "delay_seconds": backoff,
+            }
             logger.error(
-                "Unhandled pipeline error during message processing. "
-                "Method: '%(method)s', Message ID: %(message_id)s. "
-                f"Nacking with {backoff:.1f}s delay.",
+                "Unhandled pipeline error during message processing."
+                " Method: %(method)r, Message ID: %(message_id)s."
+                " Nacking with %(delay_seconds).1fs delay.",
+                log_ctx,
                 exc_info=exc,
+                extra=log_ctx,
             )
             await msg.nack(backoff)
 
@@ -802,10 +852,11 @@ class PlanqConsumer:
             await self._process_message(msg)
         except Exception as exc:
             logger.error(
-                "Broker operation failed for method '%(method)s'. "
-                "Message ID: %(message_id)s. "
-                "Relying on broker's visibility timeout for redelivery.",
+                "Broker operation failed for method %(method)r."
+                " Message ID: %(message_id)s."
+                " Relying on broker's visibility timeout for redelivery.",
                 exc_info=exc,
+                extra={"event": LogEvent.BROKER_OPERATION_FAILED},
             )
         finally:
             sem.release()

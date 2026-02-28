@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncIterator
 from types import TracebackType
 from typing import TYPE_CHECKING, Final
+
+from planq.enums import LogEvent
+from planq.log import get_planq_logger
 
 if TYPE_CHECKING:
     from planq.message import BrokerMessage
     from planq.models import JsonRpcRequest, JsonRpcResponse
     from planq.types import Headers, Seconds
 
-logger = logging.getLogger(__name__)
+logger = get_planq_logger(__name__)
 
 MAX_LOG_PAYLOAD_SIZE: Final[int] = 1000
 
@@ -161,7 +163,8 @@ class BaseBroker:
         if is_truncated:
             safe_body += f"... [truncated, total size: {body_size} bytes]"
 
-        ctx = {
+        log_ctx = {
+            "event": LogEvent.POISON_MESSAGE,
             "message_id": message_id,
             "queue_name": self.get_queue_name(queue),
             "body_size": body_size,
@@ -169,10 +172,10 @@ class BaseBroker:
             "raw_body_snippet": safe_body,
         }
         logger.error(
-            "Poison message detected in queue '%(queue_name)s': "
-            "failed to parse body. Message ID: %(message_id)s.",
-            ctx,
-            extra=ctx,
+            "Poison message detected in queue %(queue_name)r:"
+            " failed to parse body. Message ID: %(message_id)s.",
+            log_ctx,
+            extra=log_ctx,
             exc_info=error,
         )
 

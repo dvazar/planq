@@ -8,11 +8,12 @@ short-circuit (return early / raise control-flow exceptions).
 
 from __future__ import annotations
 
-import logging
 import time
+from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 
-from planq.enums import Header, JsonRpcError
+from planq.enums import Header, JsonRpcError, LogEvent
+from planq.log import get_planq_logger
 from planq.models import JsonRpcErrorDetail, JsonRpcResponse
 
 if TYPE_CHECKING:
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
 
     type CallNext = Callable[[BrokerMessage], Awaitable[JsonRpcResponse | None]]
 
-logger = logging.getLogger(__name__)
+logger = get_planq_logger(__name__)
 
 
 class Middleware:
@@ -90,9 +91,13 @@ class DeadlineMiddleware(Middleware):
 
         if leeway > 60:
             logger.warning(
-                f"{type(self).__name__} configured with leeway=%.1fs (>60s). "
-                "This is unusually large and may indicate misconfiguration.",
+                "DeadlineMiddleware configured with leeway=%.1fs (>60s),"
+                " may indicate misconfiguration",
                 leeway,
+                extra={
+                    "event": LogEvent.DEADLINE_LEEWAY_WARNING,
+                    "leeway_seconds": leeway,
+                },
             )
 
         self.leeway = leeway
@@ -118,6 +123,20 @@ class DeadlineMiddleware(Middleware):
             expire_at is not None
             and time.time() > float(expire_at) + self.leeway
         ):
+            expire_at_iso = datetime.fromtimestamp(float(expire_at)).isoformat()
+            log_ctx = {
+                "event": LogEvent.MESSAGE_DEADLINE_EXCEEDED,
+                "expire_at_iso": expire_at_iso,
+                "expire_at_seconds": expire_at,
+                "leeway_seconds": self.leeway,
+            }
+            logger.warning(
+                "Message deadline exceeded before processing could begin."
+                " Message ID: %(message_id)s, Expire at: %(expire_at_iso)s,"
+                " Leeway: %(leeway_seconds).1fs",
+                log_ctx,
+                extra=log_ctx,
+            )
             if msg.correlation_id is not None:
                 return JsonRpcResponse(
                     id=msg.correlation_id,

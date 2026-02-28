@@ -438,6 +438,8 @@ class TestMiddlewarePropertyBased:
         mock_msg.body = JsonRpcRequest(
             method="test.method", params={}, id="test-123"
         )
+        mock_msg.message_id = "test-msg-id"
+        mock_msg.queue_name = "test-queue"
 
         call_next = AsyncMock(return_value=None)
         middleware = Middleware()
@@ -461,6 +463,8 @@ class TestMiddlewarePropertyBased:
             params=params,
             id="test-123",
         )
+        mock_msg.message_id = "test-msg-id"
+        mock_msg.queue_name = "test-queue"
 
         call_next = AsyncMock(return_value=None)
         middleware = Middleware()
@@ -483,6 +487,8 @@ class TestMiddlewarePropertyBased:
             params=params,
             id="test-123",
         )
+        mock_msg.message_id = "test-msg-id"
+        mock_msg.queue_name = "test-queue"
 
         call_next = AsyncMock(return_value=None)
 

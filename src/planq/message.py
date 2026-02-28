@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
+
+from planq.enums import LogEvent
+from planq.log import get_planq_logger
 
 if TYPE_CHECKING:
     from planq.models import JsonRpcRequest
     from planq.types import Headers, JsonRpcId, Seconds
 
-logger = logging.getLogger(__name__)
+logger = get_planq_logger(__name__)
 
 
 class BrokerMessage:
@@ -107,7 +109,8 @@ class BrokerMessage:
         """
         if self._is_settled:
             logger.debug(
-                "Message %(message_id)s is already settled, skipping ack",
+                "Message %(message_id)s already settled, skipping ack",
+                extra={"event": LogEvent.MESSAGE_ALREADY_SETTLED},
             )
             return
 
@@ -133,7 +136,8 @@ class BrokerMessage:
         """
         if self._is_settled:
             logger.debug(
-                "Message %(message_id)s is already settled, skipping reject"
+                "Message %(message_id)s already settled, skipping reject",
+                extra={"event": LogEvent.MESSAGE_ALREADY_SETTLED},
             )
             return
 
@@ -163,7 +167,8 @@ class BrokerMessage:
         """
         if self._is_settled:
             logger.debug(
-                "Message %(message_id)s is already settled, skipping nack"
+                "Message %(message_id)s already settled, skipping nack",
+                extra={"event": LogEvent.MESSAGE_ALREADY_SETTLED},
             )
             return
 
