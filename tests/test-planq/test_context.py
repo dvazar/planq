@@ -15,6 +15,7 @@ from planq.enums import ExecutionMode
 from planq.exceptions import HandlerTimeout
 from planq.message import BrokerMessage
 from planq.models import JsonRpcRequest, TaskRoute
+from planq.tracing import TraceContext
 
 # === Test Helper: Concrete BrokerMessage Implementation ===
 
@@ -78,12 +79,12 @@ class TestPlanqContextConstruction:
         """PlanqContext initializes all fields to None."""
         ctx = PlanqContext()
 
-        assert ctx.message_id is None
         assert ctx.msg is None
         assert ctx.route is None
         assert ctx.max_attempts is None
         assert ctx.broker_latency is None
         assert ctx.internal_latency is None
+        assert ctx.trace is None
 
     def test_is_cancelled_initially_false(self):
         """is_cancelled property is False initially."""
@@ -95,12 +96,10 @@ class TestPlanqContextConstruction:
         """PlanqContext stores assigned attribute values."""
         ctx = PlanqContext()
 
-        ctx.message_id = "msg-123"
         ctx.max_attempts = 3
         ctx.broker_latency = 1.5
         ctx.internal_latency = 0.25
 
-        assert ctx.message_id == "msg-123"
         assert ctx.max_attempts == 3
         assert ctx.broker_latency == 1.5
         assert ctx.internal_latency == 0.25
@@ -160,17 +159,17 @@ class TestGetPlanqContext:
         ctx = get_planq_context()
 
         assert isinstance(ctx, PlanqContext)
-        assert ctx.message_id is None
+        assert ctx.msg is None
 
     def test_returns_existing_context_in_same_scope(self):
         """get_planq_context() returns same context within scope."""
         ctx1 = get_planq_context()
-        ctx1.message_id = "test-id"
+        ctx1.max_attempts = 3
 
         ctx2 = get_planq_context()
 
         assert ctx1 is ctx2
-        assert ctx2.message_id == "test-id"
+        assert ctx2.max_attempts == 3
 
     @pytest.mark.asyncio
     async def test_context_shared_across_async_tasks(self):
@@ -181,7 +180,7 @@ class TestGetPlanqContext:
         """
         # Set context in parent
         parent_ctx = get_planq_context()
-        parent_ctx.message_id = "parent-id"
+        parent_ctx.max_attempts = 5
 
         async def child_task():
             # Child sees parent's context
@@ -200,7 +199,7 @@ class TestGetPlanqContext:
 
         def thread_func(name: str):
             ctx = get_planq_context()
-            ctx.message_id = f"{name}-id"
+            ctx.max_attempts = hash(name)
             results[name] = ctx
 
         thread_a = threading.Thread(target=thread_func, args=("thread-a",))
@@ -212,8 +211,8 @@ class TestGetPlanqContext:
         thread_a.join()
         thread_b.join()
 
-        assert results["thread-a"].message_id == "thread-a-id"
-        assert results["thread-b"].message_id == "thread-b-id"
+        assert results["thread-a"].max_attempts == hash("thread-a")
+        assert results["thread-b"].max_attempts == hash("thread-b")
         assert results["thread-a"] is not results["thread-b"]
 
 
@@ -271,7 +270,6 @@ class TestPlanqContextFilterWithFullContext:
         )
 
         # Populate context
-        ctx.message_id = msg.message_id
         ctx.msg = msg
         ctx.route = route
         ctx.max_attempts = 4
@@ -609,3 +607,84 @@ class TestPlanqContextFilterChainMap:
         assert isinstance(record.args, ChainMap)
         # Should still have exactly 2 maps, not 3
         assert len(record.args.maps) == 2
+
+
+# === Layer 4: PlanqContextFilter Trace Enrichment ===
+
+
+class TestPlanqContextFilterTraceEnrichment:
+    """Test trace field injection into log records."""
+
+    def test_trace_fields_set_when_trace_exists(self):
+        """filter() sets trace_id, span_id, parent_span_id."""
+        ctx = get_planq_context()
+        ctx.trace = TraceContext(
+            trace_id="a" * 32,
+            span_id="b" * 16,
+            parent_span_id="c" * 16,
+            trace_flags="01",
+        )
+
+        filter_instance = PlanqContextFilter()
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg="test message",
+            args=(),
+            exc_info=None,
+        )
+
+        filter_instance.filter(record)
+
+        assert record.trace_id == "a" * 32
+        assert record.span_id == "b" * 16
+        assert record.parent_span_id == "c" * 16
+
+    def test_parent_span_id_none_for_root_trace(self):
+        """filter() sets parent_span_id=None for root traces."""
+        ctx = get_planq_context()
+        ctx.trace = TraceContext(
+            trace_id="a" * 32,
+            span_id="b" * 16,
+        )
+
+        filter_instance = PlanqContextFilter()
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg="test message",
+            args=(),
+            exc_info=None,
+        )
+
+        filter_instance.filter(record)
+
+        assert record.trace_id == "a" * 32
+        assert record.span_id == "b" * 16
+        assert record.parent_span_id is None
+
+    def test_trace_fields_absent_when_trace_is_none(self):
+        """filter() does not set trace fields when ctx.trace is None."""
+        ctx = get_planq_context()
+        ctx.trace = None
+
+        filter_instance = PlanqContextFilter()
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="test.py",
+            lineno=1,
+            msg="test message",
+            args=(),
+            exc_info=None,
+        )
+
+        filter_instance.filter(record)
+
+        assert not hasattr(record, "trace_id")
+        assert not hasattr(record, "span_id")
+        assert not hasattr(record, "parent_span_id")

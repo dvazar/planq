@@ -36,6 +36,12 @@ Middleware:
 - :class:`~planq.middleware.DeadlineMiddleware` — built-in deadline
   enforcement with clock drift tolerance.
 
+Tracing:
+
+- :class:`~planq.tracing.TraceContext` — immutable W3C trace context.
+- :func:`~planq.tracing.parse_traceparent_and_generate_span` — parse
+  a ``traceparent`` header and generate a child span.
+
 Control flow exceptions:
 
 - :class:`~planq.exceptions.RetryMessage` — signal transport to nack.
@@ -69,6 +75,7 @@ from planq.models import (
     TaskResult,
     TaskRoute,
 )
+from planq.tracing import TraceContext, parse_traceparent_and_generate_span
 
 __all__ = [
     "Middleware",
@@ -94,7 +101,9 @@ __all__ = [
     "PlanqContext",
     "TaskResult",
     "TaskRoute",
+    "TraceContext",
     "get_planq_context",
     "get_planq_logger",
     "instrument_logging",
+    "parse_traceparent_and_generate_span",
 ]

@@ -1384,6 +1384,90 @@ class TestTransportIntegration:
         assert "Unhandled pipeline error" in call_args[0][0]
         assert call_args[1]["exc_info"] is not None
 
+    @pytest.mark.asyncio
+    async def test_response_includes_traceparent_header(self, mock_message):
+        """Response published to reply_to includes traceparent."""
+        broker = AsyncMock()
+        consumer = PlanqConsumer(broker, middlewares=[])
+
+        @consumer.task("test.tp", mode=ExecutionMode.ASYNC)
+        async def handler():
+            return "ok"
+
+        traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+        msg = mock_message(
+            method="test.tp",
+            id="req-tp",
+            headers={"traceparent": traceparent},
+        )
+
+        await consumer._process_message(msg)
+
+        broker.publish.assert_called_once()
+        headers = broker.publish.call_args[1]["headers"]
+        assert "traceparent" in headers
+
+        # Verify it's a valid child span of the original trace
+        parts = headers["traceparent"].split("-")
+        assert len(parts) == 4
+        assert parts[0] == "00"
+        assert parts[1] == "0af7651916cd43dd8448eb211c80319c"
+        assert parts[3] == "01"
+        # span_id is the consumer's span (not the original parent)
+        assert parts[2] != "b7ad6b7169203331"
+
+    @pytest.mark.asyncio
+    async def test_response_traceparent_not_overwritten_by_auto_inject(
+        self, mock_message
+    ):
+        """Handler-set traceparent is preserved, not overwritten."""
+        broker = AsyncMock()
+        consumer = PlanqConsumer(broker, middlewares=[])
+
+        @consumer.task("test.tp_custom", mode=ExecutionMode.ASYNC)
+        async def handler():
+            return TaskResult(
+                result="ok",
+                headers={"traceparent": "00-custom-span-01"},
+            )
+
+        traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+        msg = mock_message(
+            method="test.tp_custom",
+            id="req-tp-custom",
+            headers={"traceparent": traceparent},
+        )
+
+        await consumer._process_message(msg)
+
+        broker.publish.assert_called_once()
+        headers = broker.publish.call_args[1]["headers"]
+        assert headers["traceparent"] == "00-custom-span-01"
+
+    @pytest.mark.asyncio
+    async def test_notification_does_not_publish_traceparent(
+        self, mock_message
+    ):
+        """Notification (id=None) does not attempt publish."""
+        broker = AsyncMock()
+        consumer = PlanqConsumer(broker, middlewares=[])
+
+        @consumer.task("test.tp_notif", mode=ExecutionMode.ASYNC)
+        async def handler():
+            return "ok"
+
+        traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+        msg = mock_message(
+            method="test.tp_notif",
+            id=None,
+            headers={"traceparent": traceparent},
+        )
+
+        await consumer._process_message(msg)
+
+        broker.publish.assert_not_called()
+        msg.ack.assert_called_once()
+
 
 # === Layer 7: Context Population ===
 
@@ -1461,6 +1545,68 @@ class TestContextPopulation:
         await consumer._process_message(msg)
 
         assert captured_max_attempts == 4  # 3 retries + 1 attempt
+
+    @pytest.mark.asyncio
+    async def test_context_trace_set_from_traceparent_header(
+        self, mock_message
+    ):
+        """ctx.trace is populated from traceparent header."""
+        from planq.context import get_planq_context
+
+        broker = AsyncMock()
+        consumer = PlanqConsumer(broker, middlewares=[])
+
+        captured_trace = None
+
+        @consumer.task("test.trace", mode=ExecutionMode.ASYNC)
+        async def handler():
+            nonlocal captured_trace
+            ctx = get_planq_context()
+            captured_trace = ctx.trace
+            return "ok"
+
+        traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+        msg = mock_message(
+            method="test.trace",
+            id=None,
+            headers={"traceparent": traceparent},
+        )
+
+        await consumer._process_message(msg)
+
+        assert captured_trace is not None
+        assert captured_trace.trace_id == ("0af7651916cd43dd8448eb211c80319c")
+        assert captured_trace.parent_span_id == "b7ad6b7169203331"
+        assert captured_trace.trace_flags == "01"
+
+    @pytest.mark.asyncio
+    async def test_context_trace_generated_without_header(self, mock_message):
+        """ctx.trace generates new trace when no traceparent header."""
+        import re
+
+        from planq.context import get_planq_context
+
+        broker = AsyncMock()
+        consumer = PlanqConsumer(broker, middlewares=[])
+
+        captured_trace = None
+
+        @consumer.task("test.no_trace", mode=ExecutionMode.ASYNC)
+        async def handler():
+            nonlocal captured_trace
+            ctx = get_planq_context()
+            captured_trace = ctx.trace
+            return "ok"
+
+        msg = mock_message(method="test.no_trace", id=None)
+
+        await consumer._process_message(msg)
+
+        assert captured_trace is not None
+        assert re.fullmatch(r"[0-9a-f]{32}", captured_trace.trace_id)
+        assert re.fullmatch(r"[0-9a-f]{16}", captured_trace.span_id)
+        assert captured_trace.parent_span_id is None
+        assert captured_trace.trace_flags == "00"
 
 
 # === Layer 8: Conditional Retry (retry_on) ===

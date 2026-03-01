@@ -14,6 +14,7 @@ from planq.exceptions import HandlerTimeout
 if TYPE_CHECKING:
     from planq.message import BrokerMessage
     from planq.models import TaskRoute
+    from planq.tracing import TraceContext
     from planq.types import Seconds
 
 
@@ -25,17 +26,24 @@ class PlanqContext:
     execution modes.
 
     Attributes:
-        message_id: Unique broker-assigned message identifier.
+        trace: W3C Trace Context for the current invocation.
         msg: The BrokerMessage being processed.
         route: TaskRoute configuration for the current handler.
         max_attempts: Effective retry limit (1 + max_retries).
         broker_latency: Time between enqueue and receive (seconds).
         internal_latency: Time between receive and handler invocation
             (seconds).
+        rpc_duration: Total duration of any RPC calls made by the
+            handler (seconds).
+        rpc_cpu: Total CPU time consumed by any RPC calls (seconds).
+        pipeline_duration: Total duration of any child pipelines spawned
+            by the handler (seconds).
+        pipeline_cpu: Total CPU time consumed by any child pipelines
+            spawned by the handler (seconds).
     """
 
     def __init__(self) -> None:
-        self.message_id: str | None = None
+        self.trace: TraceContext | None = None
         self.msg: BrokerMessage | None = None
         self.route: TaskRoute | None = None
         self.max_attempts: int | None = None
@@ -124,6 +132,11 @@ class PlanqContextFilter(logging.Filter):
         record.thread_id = threading.get_ident()
 
         ctx = get_planq_context()
+
+        if (trace := ctx.trace) is not None:
+            record.trace_id = trace.trace_id
+            record.span_id = trace.span_id
+            record.parent_span_id = trace.parent_span_id
 
         if (msg := ctx.msg) is not None:
             record.queue_name = msg.queue_name

@@ -25,7 +25,7 @@ from typing import (
 )
 
 from planq.context import get_planq_context
-from planq.enums import ExecutionMode, JsonRpcError, LogEvent
+from planq.enums import ExecutionMode, Header, JsonRpcError, LogEvent
 from planq.exceptions import (
     FeatureNotSupportedError,
     HandlerTimeout,
@@ -52,6 +52,7 @@ from planq.params import (
     ParamsConverter,
     analyze_signature,
 )
+from planq.tracing import parse_traceparent_and_generate_span
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -754,6 +755,9 @@ class PlanqConsumer:
         """
         ctx = get_planq_context()
         ctx.msg = msg
+        ctx.trace = parse_traceparent_and_generate_span(
+            msg.headers.get(Header.TRACEPARENT)
+        )
         ctx.broker_latency = round(msg.received_at - msg.enqueued_at, 3)
         ctx.internal_latency = round(time.time() - msg.received_at, 3)
 
@@ -771,6 +775,10 @@ class PlanqConsumer:
                 and msg.correlation_id is not None
                 and msg.reply_to
             ):
+                response.headers.setdefault(
+                    Header.TRACEPARENT,
+                    ctx.trace.to_traceparent(),
+                )
                 try:
                     await self.broker.publish(
                         msg.reply_to,

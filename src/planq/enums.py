@@ -29,6 +29,9 @@ class Header(StrEnum):
     EXPIRE_AT = "x-expire-at"
     """Unix timestamp (float) after which the message is considered expired."""
 
+    TRACEPARENT = "traceparent"
+    """W3C Trace Context traceparent header for distributed tracing."""
+
 
 class JsonRpcError(IntEnum):
     """Standard JSON-RPC 2.0 error codes.
