@@ -13,6 +13,7 @@ dev = [
 ]
 
 sqs = ["aiobotocore>=2.0"]
+redis = ["redis[hiredis]>=5.0"]
 
 testing = [
     "pytest>=8.0",

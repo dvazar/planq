@@ -8,9 +8,9 @@ services:
       - '19325:9325'
     volumes:
       - ./elasticmq.conf:/opt/elasticmq.conf
-    networks:
-      - rebotics
 
-networks:
-  rebotics:
-    driver: bridge
+  redis:
+    container_name: redis
+    image: redis:7-alpine
+    ports:
+      - '16379:6379'

@@ -12,7 +12,6 @@ import time
 import uuid
 from concurrent.futures import Future, ProcessPoolExecutor
 from functools import partial
-from random import uniform
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -20,6 +19,7 @@ from typing import (
     Final,
 )
 
+from planq.backoff import full_jitter
 from planq.context import get_planq_context
 from planq.enums import ExecutionMode, Header, JsonRpcError, LogEvent
 from planq.exceptions import (
@@ -347,11 +347,9 @@ class PlanqConsumer:
     def _calculate_backoff(self, delivery_count: int) -> Seconds:
         # Full Jitter Backoff Strategy
         s = self._settings
-        exponential_cap = min(
-            s.retry_max_delay,
-            s.retry_base_delay * (2 ** (delivery_count - 1)),
+        return full_jitter(
+            delivery_count, s.retry_base_delay, s.retry_max_delay
         )
-        return uniform(0, exponential_cap)
 
     def _get_max_retries(self, route: TaskRoute) -> int:
         """Determine max retries using priority: route → settings → default.

@@ -107,3 +107,6 @@ class LogEvent(StrEnum):
 
     MESSAGE_ALREADY_SETTLED = "message_already_settled"
     """Duplicate ack/reject/nack skipped on already-settled message."""
+
+    CONSUME_CONNECTION_ERROR = "consume_connection_error"
+    """Transient Redis error in consume loop; retrying with backoff."""
