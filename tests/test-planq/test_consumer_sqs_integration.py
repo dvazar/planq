@@ -9,6 +9,7 @@ import time
 import pytest
 import pytest_asyncio
 
+from planq.app import Planq
 from planq.consumer import PlanqConsumer
 from planq.enums import ExecutionMode, JsonRpcError
 from planq.exceptions import RejectMessage, RetryMessage
@@ -125,9 +126,10 @@ async def test_consumer_executes_async_handler_with_positional_params(
     sqs_broker, test_queue_url, results_queue_url
 ):
     """Consumer executes async handler with positional parameters."""
-    consumer = PlanqConsumer(sqs_broker)
+    app = Planq(broker=sqs_broker)
+    consumer = PlanqConsumer(app)
 
-    @consumer.task("math.add", mode=ExecutionMode.ASYNC)
+    @app.task("math.add", mode=ExecutionMode.ASYNC)
     async def add_numbers(a: int, b: int) -> int:
         return a + b
 
@@ -154,9 +156,10 @@ async def test_consumer_executes_async_handler_with_named_params(
     sqs_broker, test_queue_url, results_queue_url
 ):
     """Consumer executes async handler with named parameters."""
-    consumer = PlanqConsumer(sqs_broker)
+    app = Planq(broker=sqs_broker)
+    consumer = PlanqConsumer(app)
 
-    @consumer.task("user.greet", mode=ExecutionMode.ASYNC)
+    @app.task("user.greet", mode=ExecutionMode.ASYNC)
     async def greet(name: str, title: str = "Mr.") -> str:
         return f"Hello, {title} {name}!"
 
@@ -186,9 +189,10 @@ async def test_consumer_executes_async_handler_with_no_params(
     sqs_broker, test_queue_url, results_queue_url
 ):
     """Consumer executes async handler with no parameters."""
-    consumer = PlanqConsumer(sqs_broker)
+    app = Planq(broker=sqs_broker)
+    consumer = PlanqConsumer(app)
 
-    @consumer.task("ping", mode=ExecutionMode.ASYNC)
+    @app.task("ping", mode=ExecutionMode.ASYNC)
     async def ping() -> str:
         return "pong"
 
@@ -217,11 +221,12 @@ async def test_consumer_notification_does_not_send_response(
     sqs_broker, test_queue_url, results_queue_url
 ):
     """Consumer does not send response for notifications (id=None)."""
-    consumer = PlanqConsumer(sqs_broker)
+    app = Planq(broker=sqs_broker)
+    consumer = PlanqConsumer(app)
 
     executed = False
 
-    @consumer.task("notify.log", mode=ExecutionMode.ASYNC)
+    @app.task("notify.log", mode=ExecutionMode.ASYNC)
     async def log_event(message: str) -> None:
         nonlocal executed
         executed = True
@@ -253,9 +258,10 @@ async def test_consumer_returns_task_result_with_headers(
     sqs_broker, test_queue_url, results_queue_url
 ):
     """Consumer handles TaskResult with custom headers."""
-    consumer = PlanqConsumer(sqs_broker)
+    app = Planq(broker=sqs_broker)
+    consumer = PlanqConsumer(app)
 
-    @consumer.task("api.fetch", mode=ExecutionMode.ASYNC)
+    @app.task("api.fetch", mode=ExecutionMode.ASYNC)
     async def fetch_data() -> TaskResult:
         return TaskResult(
             result={"data": "value"},
@@ -308,10 +314,11 @@ async def test_consumer_retries_on_handler_failure(
     sqs_broker, test_queue_url, results_queue_url
 ):
     """Consumer retries handler on failure and tracks delivery count."""
-    consumer = PlanqConsumer(sqs_broker)
+    app = Planq(broker=sqs_broker)
+    consumer = PlanqConsumer(app)
     attempts = []
 
-    @consumer.task(
+    @app.task(
         "task.flaky",
         mode=ExecutionMode.ASYNC,
         max_retries=2,
@@ -358,9 +365,10 @@ async def test_consumer_returns_error_when_retries_exhausted(
 ):
     """Consumer returns error response when max retries exhausted."""
     settings = ConsumerSettings(max_retries=1)
-    consumer = PlanqConsumer(sqs_broker, settings=settings)
+    app = Planq(broker=sqs_broker)
+    consumer = PlanqConsumer(app, settings=settings)
 
-    @consumer.task(
+    @app.task(
         "task.always_fails",
         mode=ExecutionMode.ASYNC,
         retry_on=Exception,
@@ -404,10 +412,11 @@ async def test_consumer_handles_retry_message_exception(
     sqs_broker, test_queue_url, results_queue_url
 ):
     """Consumer nacks message when handler raises RetryMessage."""
-    consumer = PlanqConsumer(sqs_broker)
+    app = Planq(broker=sqs_broker)
+    consumer = PlanqConsumer(app)
     attempts = []
 
-    @consumer.task("task.retry_explicit", mode=ExecutionMode.ASYNC)
+    @app.task("task.retry_explicit", mode=ExecutionMode.ASYNC)
     async def retry_handler() -> str:
         attempts.append(1)
         if len(attempts) < 2:
@@ -443,9 +452,10 @@ async def test_consumer_handles_reject_message_exception(
     sqs_broker, test_queue_url, results_queue_url
 ):
     """Consumer rejects message when handler raises RejectMessage."""
-    consumer = PlanqConsumer(sqs_broker)
+    app = Planq(broker=sqs_broker)
+    consumer = PlanqConsumer(app)
 
-    @consumer.task("task.invalid", mode=ExecutionMode.ASYNC)
+    @app.task("task.invalid", mode=ExecutionMode.ASYNC)
     async def reject_handler() -> None:
         raise RejectMessage
 
@@ -471,7 +481,8 @@ async def test_consumer_rejects_unregistered_method(
     sqs_broker, test_queue_url, results_queue_url
 ):
     """Consumer rejects messages for unregistered methods without response."""
-    consumer = PlanqConsumer(sqs_broker)
+    app = Planq(broker=sqs_broker)
+    consumer = PlanqConsumer(app)
 
     # Publish request for unknown method
     request = JsonRpcRequest(method="unknown.method", id="req-9")
@@ -498,9 +509,10 @@ async def test_consumer_deadline_middleware_rejects_expired_message(
     sqs_broker, test_queue_url, results_queue_url
 ):
     """DeadlineMiddleware rejects messages with expired TTL."""
-    consumer = PlanqConsumer(sqs_broker, middlewares=[DeadlineMiddleware()])
+    app = Planq(broker=sqs_broker)
+    consumer = PlanqConsumer(app, middlewares=[DeadlineMiddleware()])
 
-    @consumer.task("task.delayed", mode=ExecutionMode.ASYNC)
+    @app.task("task.delayed", mode=ExecutionMode.ASYNC)
     async def delayed_handler() -> str:
         return "should not execute"
 
@@ -529,9 +541,10 @@ async def test_consumer_deadline_middleware_allows_valid_ttl(
     sqs_broker, test_queue_url, results_queue_url
 ):
     """DeadlineMiddleware allows messages with valid TTL."""
-    consumer = PlanqConsumer(sqs_broker, middlewares=[DeadlineMiddleware()])
+    app = Planq(broker=sqs_broker)
+    consumer = PlanqConsumer(app, middlewares=[DeadlineMiddleware()])
 
-    @consumer.task("task.valid_ttl", mode=ExecutionMode.ASYNC)
+    @app.task("task.valid_ttl", mode=ExecutionMode.ASYNC)
     async def valid_handler() -> str:
         return "executed"
 
@@ -562,11 +575,12 @@ async def test_consumer_handles_multiple_messages_concurrently(
 ):
     """Consumer processes multiple messages concurrently."""
     settings = ConsumerSettings(concurrency=3)
-    consumer = PlanqConsumer(sqs_broker, settings=settings)
+    app = Planq(broker=sqs_broker)
+    consumer = PlanqConsumer(app, settings=settings)
 
     executed = []
 
-    @consumer.task("task.concurrent", mode=ExecutionMode.ASYNC)
+    @app.task("task.concurrent", mode=ExecutionMode.ASYNC)
     async def concurrent_handler(value: int) -> int:
         await asyncio.sleep(0.1)  # Simulate work
         executed.append(value)
@@ -618,9 +632,10 @@ async def test_consumer_handler_with_complex_return_type(
     sqs_broker, test_queue_url, results_queue_url
 ):
     """Consumer handles complex return types (dict, list, nested)."""
-    consumer = PlanqConsumer(sqs_broker)
+    app = Planq(broker=sqs_broker)
+    consumer = PlanqConsumer(app)
 
-    @consumer.task("data.complex", mode=ExecutionMode.ASYNC)
+    @app.task("data.complex", mode=ExecutionMode.ASYNC)
     async def complex_handler() -> dict:
         return {
             "users": [

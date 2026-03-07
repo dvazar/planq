@@ -181,10 +181,12 @@ def thread_consumer():
     """
     from unittest.mock import MagicMock
 
+    from planq.app import Planq
     from planq.consumer import PlanqConsumer
 
     broker = MagicMock()
-    return PlanqConsumer(broker, process_workers=None, middlewares=[])
+    app = Planq(broker=broker)
+    return PlanqConsumer(app, process_workers=None, middlewares=[])
 
 
 @pytest.fixture
@@ -195,10 +197,12 @@ def process_consumer():
     """
     from unittest.mock import MagicMock
 
+    from planq.app import Planq
     from planq.consumer import PlanqConsumer
 
     broker = MagicMock()
-    consumer = PlanqConsumer(broker, process_workers=2, middlewares=[])
+    app = Planq(broker=broker)
+    consumer = PlanqConsumer(app, process_workers=2, middlewares=[])
     yield consumer
     # Critical: cleanup process pool to prevent resource leaks
     if consumer._pool:

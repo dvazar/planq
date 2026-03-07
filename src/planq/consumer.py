@@ -18,10 +18,6 @@ from typing import (
     Any,
     Callable,
     Final,
-    Literal,
-    ParamSpec,
-    TypeVar,
-    overload,
 )
 
 from planq.context import get_planq_context
@@ -48,23 +44,17 @@ from planq.models import (
     TaskResult,
     TaskRoute,
 )
-from planq.params import (
-    ParamsConverter,
-    analyze_signature,
-)
+from planq.params import ParamsConverter
 from planq.tracing import parse_traceparent_and_generate_span
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
 
-    from planq.broker import BaseBroker
+    from planq.app import Planq
     from planq.message import BrokerMessage
     from planq.types import RetryCondition, Seconds
 
     type CallNext = Callable[[BrokerMessage], Awaitable[JsonRpcResponse | None]]
-
-P = ParamSpec("P")  # Captures function parameters (*args, **kwargs)
-T = TypeVar("T")  # Captures return type
 
 logger = get_planq_logger(__name__)
 
@@ -256,26 +246,27 @@ class PlanqConsumer:
     deadline checks; retry and transport operations are consolidated
     in ``_process_message``.
 
-    Register handlers with the :meth:`task` decorator, then call
-    :meth:`run` to start consuming. Handles SIGINT/SIGTERM for
-    graceful shutdown.
+    Register handlers via :meth:`Planq.task`, then pass the
+    :class:`Planq` app to this consumer and call :meth:`run` to
+    start consuming. Handles SIGINT/SIGTERM for graceful shutdown.
 
     Attributes:
+        app: The Planq application instance.
         broker: The broker instance used to publish and consume messages.
         routes: Mapping of method name to :class:`~planq.models.TaskRoute`.
     """
 
     def __init__(
         self,
-        broker: BaseBroker,
+        app: Planq,
         process_workers: int | None = None,
         settings: ConsumerSettings | None = None,
         middlewares: list[Middleware] | None = None,
     ) -> None:
-        """Initialize the consumer with a broker and optional settings.
+        """Initialize the consumer with a Planq application.
 
         Args:
-            broker: Connected (or lazy) broker instance.
+            app: The Planq application containing broker and routes.
             process_workers: Number of worker processes for
                 ``ExecutionMode.PROCESS`` tasks. ``None`` disables
                 process-pool execution.
@@ -287,8 +278,9 @@ class PlanqConsumer:
                 Defaults to ``[DeadlineMiddleware()]`` when ``None``.
                 Pass an empty list to disable all middleware.
         """
-        self.broker = broker
-        self.routes: dict[str, TaskRoute] = {}
+        self.app = app
+        self.broker = app.broker
+        self.routes = app.routes
 
         self._pool: _ProcessPool | None = (
             _ProcessPool(max_workers=process_workers)
@@ -304,133 +296,6 @@ class PlanqConsumer:
         self._params_converter = ParamsConverter()
         self._build_pipeline()
         self._reject_callbacks = []
-
-    @overload
-    def task(
-        self,
-        name: str,
-        mode: Literal[ExecutionMode.ASYNC] = ...,
-        *,
-        time_limit: Seconds | None = None,
-        grace_period: Seconds | None = None,
-        max_retries: int | None = None,
-        retry_on: (
-            RetryCondition
-            | list[RetryCondition]
-            | tuple[RetryCondition, ...]
-            | None
-        ) = None,
-    ) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]: ...
-
-    @overload
-    def task(
-        self,
-        name: str,
-        mode: Literal[ExecutionMode.THREAD, ExecutionMode.PROCESS],
-        *,
-        time_limit: Seconds | None = None,
-        grace_period: Seconds | None = None,
-        max_retries: int | None = None,
-        retry_on: (
-            RetryCondition
-            | list[RetryCondition]
-            | tuple[RetryCondition, ...]
-            | None
-        ) = None,
-    ) -> Callable[[Callable[P, T]], Callable[P, T]]: ...
-
-    @overload
-    def task(
-        self,
-        name: str,
-        mode: ExecutionMode = ...,
-        *,
-        time_limit: Seconds | None = None,
-        grace_period: Seconds | None = None,
-        max_retries: int | None = None,
-        retry_on: (
-            RetryCondition
-            | list[RetryCondition]
-            | tuple[RetryCondition, ...]
-            | None
-        ) = None,
-    ) -> Callable[
-        [Callable[P, Awaitable[T] | T]], Callable[P, Awaitable[T] | T]
-    ]: ...
-
-    def task(
-        self,
-        name: str,
-        mode: ExecutionMode = ExecutionMode.ASYNC,
-        *,
-        time_limit: Seconds | None = None,
-        grace_period: Seconds | None = None,
-        max_retries: int | None = None,
-        retry_on: (
-            RetryCondition
-            | list[RetryCondition]
-            | tuple[RetryCondition, ...]
-            | None
-        ) = None,
-    ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """Register a callable as the handler for a named JSON-RPC method.
-
-        Usage::
-
-            @consumer.task("my.method", mode=ExecutionMode.THREAD,
-                           time_limit=30.0)
-            def handle(name: str, greeting: str = "Hi"):
-                ...
-
-        Args:
-            name: JSON-RPC method name that routes to this handler.
-            mode: Execution strategy for the handler. Defaults to
-                ``ExecutionMode.ASYNC``.
-            time_limit: Maximum wall-clock seconds the handler may run.
-                ``None`` means no limit. On expiry, raises
-                :exc:`~planq.exceptions.HandlerTimeout`.
-            grace_period: Seconds between SIGALRM and SIGKILL for
-                ``ExecutionMode.PROCESS`` handlers. ``None`` defers to
-                :attr:`~planq.models.ConsumerSettings.process_timeout_grace_period`.
-            max_retries: Maximum number of retry attempts for this handler.
-                Must be non-negative. Zero means no retries (a single attempt
-                only), useful for idempotent operations that should fail fast.
-                ``None`` defers to
-                :attr:`~planq.models.ConsumerSettings.max_retries`
-                or ``DEFAULT_MAX_RETRIES`` (3).
-            retry_on: Exception types or predicates that enable retries.
-                - None (default): Do NOT retry any exceptions.
-                - Single type: retry_on=ValueError
-                - Multiple types: retry_on=[ValueError, KeyError]
-                - Callable: retry_on=lambda exc: "temporary" in str(exc)
-                - Mixed: retry_on=[ValueError, lambda exc: ...]
-                If exception doesn't match any condition, message is rejected
-                immediately without counting toward max_retries.
-
-        Returns:
-            A decorator that registers the wrapped function and returns
-            it unchanged.
-
-        Raises:
-            pydantic.ValidationError: If max_retries is negative, or
-                time_limit/grace_period are non-positive.
-        """
-
-        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-            self.routes[name] = TaskRoute(
-                handler=func,
-                mode=mode,
-                time_limit=time_limit,
-                grace_period=grace_period,
-                max_retries=max_retries,
-                retry_on=retry_on,
-                param_meta=analyze_signature(func),
-            )
-            return func
-
-        return decorator
-
-    handler = task
 
     def on_reject(
         self,

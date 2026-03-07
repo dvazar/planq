@@ -5,9 +5,18 @@ Public API
 
 Core classes:
 
-- :class:`~planq.consumer.PlanqConsumer` — main consumer; register
-  handlers with :meth:`~planq.consumer.PlanqConsumer.task` and start
-  with :meth:`~planq.consumer.PlanqConsumer.run`.
+- :class:`~planq.app.Planq` — primary entry point; binds a broker to
+  a task registry. Register handlers with :meth:`~planq.app.Planq.task`
+  and publish via :meth:`~planq.app.PlanqTask.send`.
+- :class:`~planq.app.PlanqTask` — callable wrapper returned by
+  ``@app.task()``; adds ``.send()`` for publishing and
+  ``.options()`` for transport configuration.
+- :class:`~planq.app.TaskSender` — builder returned by
+  ``PlanqTask.options()``; holds transport options with a typed
+  ``.send()``.
+- :class:`~planq.consumer.PlanqConsumer` — runs the consumer loop;
+  accepts a :class:`Planq` app and calls
+  :meth:`~planq.consumer.PlanqConsumer.run` to start processing.
 - :class:`~planq.base.BaseBroker` — base class for broker providers.
 - :class:`~planq.message.BrokerMessage` — base class for message wrappers.
 
@@ -48,6 +57,7 @@ Control flow exceptions:
 - :class:`~planq.exceptions.RejectMessage` — signal transport to reject.
 """
 
+from planq.app import Planq, PlanqTask, SyncPlanq, TaskSender
 from planq.broker import BaseBroker
 from planq.consumer import PlanqConsumer
 from planq.context import PlanqContext, get_planq_context
@@ -78,6 +88,10 @@ from planq.models import (
 from planq.tracing import TraceContext, parse_traceparent_and_generate_span
 
 __all__ = [
+    "Planq",
+    "PlanqTask",
+    "SyncPlanq",
+    "TaskSender",
     "Middleware",
     "BaseBroker",
     "BrokerMessage",

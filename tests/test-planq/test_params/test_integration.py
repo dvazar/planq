@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import BaseModel, Field
 
+from planq.app import Planq
 from planq.consumer import PlanqConsumer
 from planq.enums import ExecutionMode, JsonRpcError
 from planq.exceptions import RejectMessage
@@ -19,10 +20,16 @@ from planq.models import (
 
 
 @pytest.fixture
-def consumer():
-    """Consumer with no middleware for clean testing."""
+def app():
+    """Planq application with mock broker."""
     broker = MagicMock()
-    return PlanqConsumer(broker, middlewares=[])
+    return Planq(broker=broker)
+
+
+@pytest.fixture
+def consumer(app):
+    """Consumer with no middleware for clean testing."""
+    return PlanqConsumer(app, middlewares=[])
 
 
 @pytest.fixture
@@ -58,11 +65,13 @@ class TestIntegrationPrimitiveHandlers:
     """End-to-end: primitive type handlers."""
 
     @pytest.mark.asyncio
-    async def test_dict_params_with_typed_handler(self, consumer, mock_message):
+    async def test_dict_params_with_typed_handler(
+        self, app, consumer, mock_message
+    ):
         """Dict params validated and passed to handler."""
         received = {}
 
-        @consumer.task("test.typed")
+        @app.task("test.typed")
         async def handler(name: str, age: int):
             received["name"] = name
             received["age"] = age
@@ -77,11 +86,13 @@ class TestIntegrationPrimitiveHandlers:
         assert response.result == "ok"
 
     @pytest.mark.asyncio
-    async def test_list_params_with_typed_handler(self, consumer, mock_message):
+    async def test_list_params_with_typed_handler(
+        self, app, consumer, mock_message
+    ):
         """List params mapped to named params."""
         received = {}
 
-        @consumer.task("test.positional")
+        @app.task("test.positional")
         async def handler(x: int, y: str):
             received["x"] = x
             received["y"] = y
@@ -95,11 +106,11 @@ class TestIntegrationPrimitiveHandlers:
         assert received == {"x": 42, "y": "hello"}
 
     @pytest.mark.asyncio
-    async def test_default_values_work(self, consumer, mock_message):
+    async def test_default_values_work(self, app, consumer, mock_message):
         """Handler defaults used when params omitted."""
         received = {}
 
-        @consumer.task("test.defaults")
+        @app.task("test.defaults")
         async def handler(name: str, greeting: str = "Hello"):
             received["name"] = name
             received["greeting"] = greeting
@@ -111,10 +122,12 @@ class TestIntegrationPrimitiveHandlers:
         assert received["greeting"] == "Hello"
 
     @pytest.mark.asyncio
-    async def test_none_params_for_no_arg_handler(self, consumer, mock_message):
+    async def test_none_params_for_no_arg_handler(
+        self, app, consumer, mock_message
+    ):
         """None params works for handlers with no args."""
 
-        @consumer.task("test.no_args")
+        @app.task("test.no_args")
         async def handler():
             return "ok"
 
@@ -127,7 +140,7 @@ class TestIntegrationPydanticModels:
     """End-to-end: Pydantic model handlers."""
 
     @pytest.mark.asyncio
-    async def test_pydantic_model_parsed(self, consumer, mock_message):
+    async def test_pydantic_model_parsed(self, app, consumer, mock_message):
         """Pydantic model auto-parsed from dict param."""
 
         class UserModel(BaseModel):
@@ -136,7 +149,7 @@ class TestIntegrationPydanticModels:
 
         received_user = None
 
-        @consumer.task("test.pydantic")
+        @app.task("test.pydantic")
         async def handler(user: UserModel):
             nonlocal received_user
             received_user = user
@@ -153,7 +166,7 @@ class TestIntegrationPydanticModels:
 
     @pytest.mark.asyncio
     async def test_pydantic_validation_returns_error(
-        self, consumer, mock_message
+        self, app, consumer, mock_message
     ):
         """Invalid Pydantic params return -32602 error."""
 
@@ -161,7 +174,7 @@ class TestIntegrationPydanticModels:
             name: str
             age: int
 
-        @consumer.task("test.pydantic_invalid")
+        @app.task("test.pydantic_invalid")
         async def handler(user: UserModel):
             return "should not reach"
 
@@ -179,7 +192,9 @@ class TestIntegrationPydanticModels:
         assert response.error.code == JsonRpcError.INVALID_PARAMS
 
     @pytest.mark.asyncio
-    async def test_mixed_pydantic_and_primitives(self, consumer, mock_message):
+    async def test_mixed_pydantic_and_primitives(
+        self, app, consumer, mock_message
+    ):
         """Handler with Pydantic model + primitive params."""
 
         class Config(BaseModel):
@@ -187,7 +202,7 @@ class TestIntegrationPydanticModels:
 
         received = {}
 
-        @consumer.task("test.mixed")
+        @app.task("test.mixed")
         async def handler(name: str, config: Config, count: int = 1):
             received["name"] = name
             received["config"] = config
@@ -213,7 +228,7 @@ class TestIntegrationDataclasses:
     """End-to-end: dataclass handlers."""
 
     @pytest.mark.asyncio
-    async def test_dataclass_parsed(self, consumer, mock_message):
+    async def test_dataclass_parsed(self, app, consumer, mock_message):
         """Dataclass auto-parsed from dict param."""
 
         @dataclasses.dataclass
@@ -223,7 +238,7 @@ class TestIntegrationDataclasses:
 
         received_point = None
 
-        @consumer.task("test.dataclass")
+        @app.task("test.dataclass")
         async def handler(p: Point):
             nonlocal received_point
             received_point = p
@@ -250,11 +265,12 @@ class TestIntegrationDataclasses:
 
         settings = ConsumerSettings(dataclass_parser=my_parser)
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, settings=settings, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, settings=settings, middlewares=[])
 
         received_data = None
 
-        @consumer.task("test.parser")
+        @app.task("test.parser")
         async def handler(d: Data):
             nonlocal received_data
             received_data = d
@@ -272,11 +288,11 @@ class TestIntegrationVarArgs:
     """End-to-end: *args and **kwargs handlers."""
 
     @pytest.mark.asyncio
-    async def test_var_args_handler(self, consumer, mock_message):
+    async def test_var_args_handler(self, app, consumer, mock_message):
         """Handler with *args receives extra positional."""
         received_args = None
 
-        @consumer.task("test.varargs")
+        @app.task("test.varargs")
         async def handler(x: int, *args):
             nonlocal received_args
             received_args = args
@@ -291,11 +307,11 @@ class TestIntegrationVarArgs:
         assert received_args == ("extra1", "extra2")
 
     @pytest.mark.asyncio
-    async def test_var_kwargs_handler(self, consumer, mock_message):
+    async def test_var_kwargs_handler(self, app, consumer, mock_message):
         """Handler with **kwargs receives extra named."""
         received_kwargs = None
 
-        @consumer.task("test.varkw")
+        @app.task("test.varkw")
         async def handler(x: int, **kwargs):
             nonlocal received_kwargs
             received_kwargs = kwargs
@@ -314,10 +330,12 @@ class TestIntegrationAnnotatedConstraints:
     """End-to-end: Annotated types with constraints."""
 
     @pytest.mark.asyncio
-    async def test_annotated_constraint_passes(self, consumer, mock_message):
+    async def test_annotated_constraint_passes(
+        self, app, consumer, mock_message
+    ):
         """Valid Annotated[int, Field(gt=0)] passes."""
 
-        @consumer.task("test.constrained")
+        @app.task("test.constrained")
         async def handler(
             count: Annotated[int, Field(gt=0)],
         ):
@@ -328,10 +346,12 @@ class TestIntegrationAnnotatedConstraints:
         assert response.result == 5
 
     @pytest.mark.asyncio
-    async def test_annotated_constraint_fails(self, consumer, mock_message):
+    async def test_annotated_constraint_fails(
+        self, app, consumer, mock_message
+    ):
         """Invalid Annotated[int, Field(gt=0)] returns error."""
 
-        @consumer.task("test.constrained_fail")
+        @app.task("test.constrained_fail")
         async def handler(
             count: Annotated[int, Field(gt=0)],
         ):
@@ -351,11 +371,11 @@ class TestIntegrationErrorHandling:
 
     @pytest.mark.asyncio
     async def test_invalid_params_returns_json_rpc_error(
-        self, consumer, mock_message
+        self, app, consumer, mock_message
     ):
         """InvalidParamsError returns -32602 for requests."""
 
-        @consumer.task("test.invalid")
+        @app.task("test.invalid")
         async def handler(x: int, y: str):
             return "should not reach"
 
@@ -373,12 +393,12 @@ class TestIntegrationErrorHandling:
 
     @pytest.mark.asyncio
     async def test_invalid_params_rejects_notification(
-        self, consumer, mock_message
+        self, app, consumer, mock_message
     ):
         """InvalidParamsError raises RejectMessage for
         notifications."""
 
-        @consumer.task("test.notify_invalid")
+        @app.task("test.notify_invalid")
         async def handler(x: int, y: str):
             return "should not reach"
 
@@ -392,12 +412,12 @@ class TestIntegrationErrorHandling:
 
     @pytest.mark.asyncio
     async def test_invalid_params_request_no_reply_to(
-        self, consumer, mock_message
+        self, app, consumer, mock_message
     ):
         """InvalidParamsError raises RejectMessage when
         no reply_to."""
 
-        @consumer.task("test.no_reply")
+        @app.task("test.no_reply")
         async def handler(x: int):
             pass
 
@@ -414,10 +434,10 @@ class TestIntegrationErrorHandling:
 class TestIntegrationConsumerProperty:
     """Tests for consumer task registration."""
 
-    def test_param_meta_stored_in_route(self, consumer):
+    def test_param_meta_stored_in_route(self, app, consumer):
         """task() decorator stores param_meta in route."""
 
-        @consumer.task("test.meta")
+        @app.task("test.meta")
         async def handler(x: int, y: str):
             pass
 
@@ -430,11 +450,13 @@ class TestIntegrationThreadMode:
     """End-to-end: THREAD mode with param conversion."""
 
     @pytest.mark.asyncio
-    async def test_thread_mode_with_typed_params(self, consumer, mock_message):
+    async def test_thread_mode_with_typed_params(
+        self, app, consumer, mock_message
+    ):
         """THREAD mode works with type conversion."""
         received = {}
 
-        @consumer.task("test.thread_typed", mode=ExecutionMode.THREAD)
+        @app.task("test.thread_typed", mode=ExecutionMode.THREAD)
         def handler(name: str, count: int):
             received["name"] = name
             received["count"] = count
@@ -449,7 +471,9 @@ class TestIntegrationThreadMode:
         assert response.result == "ok"
 
     @pytest.mark.asyncio
-    async def test_thread_mode_pydantic_model(self, consumer, mock_message):
+    async def test_thread_mode_pydantic_model(
+        self, app, consumer, mock_message
+    ):
         """THREAD mode with Pydantic model param."""
 
         class Task(BaseModel):
@@ -458,7 +482,7 @@ class TestIntegrationThreadMode:
 
         received_task = None
 
-        @consumer.task(
+        @app.task(
             "test.thread_pydantic",
             mode=ExecutionMode.THREAD,
         )
@@ -485,11 +509,11 @@ class TestIntegrationUnionOptional:
     """End-to-end: Union and Optional types."""
 
     @pytest.mark.asyncio
-    async def test_optional_param(self, consumer, mock_message):
+    async def test_optional_param(self, app, consumer, mock_message):
         """Optional[int] param accepts None."""
         received = {}
 
-        @consumer.task("test.optional")
+        @app.task("test.optional")
         async def handler(x: int, y: int | None = None):
             received["x"] = x
             received["y"] = y
@@ -504,11 +528,11 @@ class TestIntegrationUnionOptional:
         assert received["y"] is None
 
     @pytest.mark.asyncio
-    async def test_union_type_param(self, consumer, mock_message):
+    async def test_union_type_param(self, app, consumer, mock_message):
         """Union[int, str] param accepts both types."""
         received = {}
 
-        @consumer.task("test.union")
+        @app.task("test.union")
         async def handler(value: int | str):
             received["value"] = value
             return "ok"
@@ -518,10 +542,10 @@ class TestIntegrationUnionOptional:
         assert received["value"] == "hello"
 
     @pytest.mark.asyncio
-    async def test_literal_type_param(self, consumer, mock_message):
+    async def test_literal_type_param(self, app, consumer, mock_message):
         """Literal type validates allowed values."""
 
-        @consumer.task("test.literal")
+        @app.task("test.literal")
         async def handler(
             status: Literal["active", "inactive"],
         ):
@@ -532,10 +556,10 @@ class TestIntegrationUnionOptional:
         assert response.result == "active"
 
     @pytest.mark.asyncio
-    async def test_literal_rejects_invalid(self, consumer, mock_message):
+    async def test_literal_rejects_invalid(self, app, consumer, mock_message):
         """Literal type rejects invalid values."""
 
-        @consumer.task("test.literal_bad")
+        @app.task("test.literal_bad")
         async def handler(
             status: Literal["active", "inactive"],
         ):

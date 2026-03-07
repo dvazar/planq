@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
+from planq.app import Planq
 from planq.consumer import (
     DEFAULT_MAX_RETRIES,
     PlanqConsumer,
@@ -91,91 +92,102 @@ def mock_message():
 
 
 class TestTaskRegistration:
-    """Tests for @consumer.task() decorator and route management."""
+    """Tests for @app.task() decorator and route management."""
 
     def test_task_decorator_registers_handler(self):
-        """@consumer.task() registers handler in routes dict."""
+        """@app.task() registers handler in app.routes dict."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker)
+        app = Planq(broker=broker)
 
-        @consumer.task("my.method", mode=ExecutionMode.ASYNC)
+        @app.task("my.method", mode=ExecutionMode.ASYNC)
         async def handler(x: int) -> int:
             return x * 2
 
+        consumer = PlanqConsumer(app, middlewares=[])
+
         assert "my.method" in consumer.routes
         route = consumer.routes["my.method"]
-        assert route.handler is handler
+        assert route.handler is handler._func
         assert route.mode == ExecutionMode.ASYNC
 
-    def test_task_decorator_returns_function_unchanged(self):
-        """Decorator returns the original function."""
+    def test_task_decorator_returns_planq_task(self):
+        """Decorator returns a PlanqTask wrapping the original."""
+        from planq.app import PlanqTask
+
         broker = MagicMock()
-        consumer = PlanqConsumer(broker)
+        app = Planq(broker=broker)
 
         async def handler(x: int) -> int:
             return x * 2
 
-        decorated = consumer.task("test.method")(handler)
-        assert decorated is handler
+        decorated = app.task("test.method")(handler)
+        assert isinstance(decorated, PlanqTask)
+        assert decorated._func is handler
 
     def test_handler_alias_works_identically(self):
-        """consumer.handler() is an alias for consumer.task()."""
+        """app.handler() is an alias for app.task()."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker)
+        app = Planq(broker=broker)
 
-        @consumer.handler("my.method", mode=ExecutionMode.ASYNC)
+        @app.handler("my.method", mode=ExecutionMode.ASYNC)
         async def handler(x: int) -> int:
             return x * 2
+
+        consumer = PlanqConsumer(app, middlewares=[])
 
         assert "my.method" in consumer.routes
         route = consumer.routes["my.method"]
-        assert route.handler is handler
+        assert route.handler is handler._func
 
-    def test_duplicate_task_names_overwrite(self):
-        """Registering same name twice overwrites previous handler."""
+    def test_duplicate_task_names_raises_error(self):
+        """Registering same name twice raises ValueError."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker)
+        app = Planq(broker=broker)
 
-        @consumer.task("duplicate")
+        @app.task("duplicate")
         async def first_handler():
             return "first"
 
-        @consumer.task("duplicate")
-        async def second_handler():
-            return "second"
+        with pytest.raises(ValueError, match="already registered"):
 
-        assert consumer.routes["duplicate"].handler is second_handler
+            @app.task("duplicate")
+            async def second_handler():
+                return "second"
 
     def test_task_stores_max_retries(self):
         """max_retries parameter is stored in TaskRoute."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker)
+        app = Planq(broker=broker)
 
-        @consumer.task("test", max_retries=5)
+        @app.task("test", max_retries=5)
         async def handler():
             pass
+
+        consumer = PlanqConsumer(app, middlewares=[])
 
         assert consumer.routes["test"].max_retries == 5
 
     def test_task_stores_time_limit(self):
         """time_limit parameter is stored in TaskRoute."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker)
+        app = Planq(broker=broker)
 
-        @consumer.task("test", time_limit=30.0)
+        @app.task("test", time_limit=30.0)
         async def handler():
             pass
+
+        consumer = PlanqConsumer(app, middlewares=[])
 
         assert consumer.routes["test"].time_limit == 30.0
 
     def test_task_validates_max_retries_non_negative(self):
         """max_retries must be >= 0."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker)
+        app = Planq(broker=broker)
 
         with pytest.raises(ValidationError) as exc_info:
 
-            @consumer.task("test", max_retries=-1)
+            @app.task("test", max_retries=-1)
             async def handler():
                 pass
 
@@ -185,11 +197,11 @@ class TestTaskRegistration:
     def test_task_validates_time_limit_positive(self):
         """time_limit must be > 0 when specified."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker)
+        app = Planq(broker=broker)
 
         with pytest.raises(ValidationError) as exc_info:
 
-            @consumer.task("test", time_limit=0.0)
+            @app.task("test", time_limit=0.0)
             async def handler():
                 pass
 
@@ -199,27 +211,31 @@ class TestTaskRegistration:
     def test_task_accepts_zero_max_retries(self):
         """max_retries=0 means one attempt, no retries."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker)
+        app = Planq(broker=broker)
 
-        @consumer.task("test", max_retries=0)
+        @app.task("test", max_retries=0)
         async def handler():
             pass
+
+        consumer = PlanqConsumer(app, middlewares=[])
 
         assert consumer.routes["test"].max_retries == 0
 
     def test_typed_handler_works_at_runtime(self):
         """Type hints don't break runtime behavior."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker)
+        app = Planq(broker=broker)
 
-        @consumer.task("typed.method", mode=ExecutionMode.ASYNC)
+        @app.task("typed.method", mode=ExecutionMode.ASYNC)
         async def handler(x: int, y: int) -> int:
             return x + y
+
+        consumer = PlanqConsumer(app, middlewares=[])
 
         # Verify registration works
         assert "typed.method" in consumer.routes
         route = consumer.routes["typed.method"]
-        assert route.handler is handler
+        assert route.handler is handler._func
         assert route.mode == ExecutionMode.ASYNC
 
 
@@ -236,7 +252,8 @@ class TestRetryLogic:
     def test_calculate_backoff_returns_float(self):
         """_calculate_backoff returns a float."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker)
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         backoff = consumer._calculate_backoff(delivery_count=1)
         assert isinstance(backoff, float)
@@ -244,11 +261,12 @@ class TestRetryLogic:
     def test_calculate_backoff_in_valid_range(self):
         """Backoff is between 0 and exponential_cap."""
         broker = MagicMock()
+        app = Planq(broker=broker)
         settings = ConsumerSettings(
             retry_base_delay=2.0,
             retry_max_delay=100.0,
         )
-        consumer = PlanqConsumer(broker, settings=settings)
+        consumer = PlanqConsumer(app, settings=settings, middlewares=[])
 
         # delivery_count=3 → 2^(3-1) = 4 → cap = min(100, 2*4) = 8
         for _ in range(100):
@@ -258,11 +276,12 @@ class TestRetryLogic:
     def test_calculate_backoff_respects_max_delay(self):
         """Backoff never exceeds retry_max_delay."""
         broker = MagicMock()
+        app = Planq(broker=broker)
         settings = ConsumerSettings(
             retry_base_delay=10.0,
             retry_max_delay=30.0,
         )
-        consumer = PlanqConsumer(broker, settings=settings)
+        consumer = PlanqConsumer(app, settings=settings, middlewares=[])
 
         # delivery_count=10 would give huge exponential, but capped at 30
         for _ in range(100):
@@ -272,8 +291,9 @@ class TestRetryLogic:
     def test_get_max_retries_route_priority(self):
         """Route max_retries takes priority."""
         broker = MagicMock()
+        app = Planq(broker=broker)
         settings = ConsumerSettings(max_retries=5)
-        consumer = PlanqConsumer(broker, settings=settings)
+        consumer = PlanqConsumer(app, settings=settings, middlewares=[])
 
         route = TaskRoute(
             handler=lambda: None,
@@ -286,8 +306,9 @@ class TestRetryLogic:
     def test_get_max_retries_settings_priority(self):
         """Settings max_retries used when route is None."""
         broker = MagicMock()
+        app = Planq(broker=broker)
         settings = ConsumerSettings(max_retries=7)
-        consumer = PlanqConsumer(broker, settings=settings)
+        consumer = PlanqConsumer(app, settings=settings, middlewares=[])
 
         route = TaskRoute(
             handler=lambda: None,
@@ -300,8 +321,9 @@ class TestRetryLogic:
     def test_get_max_retries_default_fallback(self):
         """DEFAULT_MAX_RETRIES used when both route and settings are None."""
         broker = MagicMock()
+        app = Planq(broker=broker)
         settings = ConsumerSettings(max_retries=None)
-        consumer = PlanqConsumer(broker, settings=settings)
+        consumer = PlanqConsumer(app, settings=settings, middlewares=[])
 
         route = TaskRoute(
             handler=lambda: None,
@@ -322,16 +344,17 @@ class TestMessageProcessingAsync:
     async def test_route_lookup_by_method_name(self, mock_message):
         """Routes message to handler by msg.body.method."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
         handler_called = False
 
-        @consumer.task("test.lookup", mode=ExecutionMode.ASYNC)
+        @app.task("test.lookup", mode=ExecutionMode.ASYNC)
         async def handler():
             nonlocal handler_called
             handler_called = True
             return "success"
 
+        consumer = PlanqConsumer(app, middlewares=[])
         msg = mock_message(method="test.lookup", id="123")
 
         response = await consumer._router_endpoint(msg)
@@ -343,16 +366,17 @@ class TestMessageProcessingAsync:
     async def test_handler_execution_positional_params(self, mock_message):
         """Handler receives positional params from list."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
         received_args = None
 
-        @consumer.task("test.positional", mode=ExecutionMode.ASYNC)
+        @app.task("test.positional", mode=ExecutionMode.ASYNC)
         async def handler(a: int, b: str, c: float):
             nonlocal received_args
             received_args = (a, b, c)
             return "ok"
 
+        consumer = PlanqConsumer(app, middlewares=[])
         msg = mock_message(method="test.positional", params=[42, "hello", 3.14])
 
         await consumer._router_endpoint(msg)
@@ -363,16 +387,17 @@ class TestMessageProcessingAsync:
     async def test_handler_execution_named_params(self, mock_message):
         """Handler receives named params from dict."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
         received_kwargs = None
 
-        @consumer.task("test.named", mode=ExecutionMode.ASYNC)
+        @app.task("test.named", mode=ExecutionMode.ASYNC)
         async def handler(name: str, age: int):
             nonlocal received_kwargs
             received_kwargs = {"name": name, "age": age}
             return "ok"
 
+        consumer = PlanqConsumer(app, middlewares=[])
         msg = mock_message(
             method="test.named", params={"name": "Alice", "age": 30}
         )
@@ -385,12 +410,13 @@ class TestMessageProcessingAsync:
     async def test_notification_returns_none(self, mock_message):
         """Notification (id=None) returns None response."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
-        @consumer.task("test.notification", mode=ExecutionMode.ASYNC)
+        @app.task("test.notification", mode=ExecutionMode.ASYNC)
         async def handler():
             return "done"
 
+        consumer = PlanqConsumer(app, middlewares=[])
         msg = mock_message(method="test.notification", id=None)
 
         response = await consumer._router_endpoint(msg)
@@ -401,15 +427,16 @@ class TestMessageProcessingAsync:
     async def test_task_result_headers_included_in_response(self, mock_message):
         """TaskResult headers merged into JsonRpcResponse."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
-        @consumer.task("test.headers", mode=ExecutionMode.ASYNC)
+        @app.task("test.headers", mode=ExecutionMode.ASYNC)
         async def handler():
             return TaskResult(
                 result={"data": "value"},
                 headers={"x-custom": "header-value"},
             )
 
+        consumer = PlanqConsumer(app, middlewares=[])
         msg = mock_message(method="test.headers", id="123")
 
         response = await consumer._router_endpoint(msg)
@@ -423,12 +450,13 @@ class TestMessageProcessingAsync:
     ):
         """Request with id but no reply_to returns None."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
-        @consumer.task("test.no_reply", mode=ExecutionMode.ASYNC)
+        @app.task("test.no_reply", mode=ExecutionMode.ASYNC)
         async def handler():
             return "result"
 
+        consumer = PlanqConsumer(app, middlewares=[])
         msg = mock_message(method="test.no_reply", id="123", reply_to=None)
 
         response = await consumer._router_endpoint(msg)
@@ -441,12 +469,13 @@ class TestMessageProcessingAsync:
     ):
         """Request with id but empty string reply_to returns None."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
-        @consumer.task("test.empty_reply", mode=ExecutionMode.ASYNC)
+        @app.task("test.empty_reply", mode=ExecutionMode.ASYNC)
         async def handler():
             return "result"
 
+        consumer = PlanqConsumer(app, middlewares=[])
         msg = mock_message(method="test.empty_reply", id="123", reply_to="")
 
         response = await consumer._router_endpoint(msg)
@@ -471,13 +500,14 @@ class TestExecutionModeAsync:
         - Covers match statement lines 489-496
         """
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
-        @consumer.task("test.async", mode=ExecutionMode.ASYNC)
+        @app.task("test.async", mode=ExecutionMode.ASYNC)
         async def async_handler(x: int) -> int:
             await asyncio.sleep(0.01)  # Ensure truly async
             return x * 2
 
+        consumer = PlanqConsumer(app, middlewares=[])
         route = consumer.routes["test.async"]
         result = await consumer._execute(route, [21], "test.async")
 
@@ -493,9 +523,9 @@ class TestExecutionModeAsync:
         - HandlerTimeout raised on expiry
         """
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
-        @consumer.task(
+        @app.task(
             "test.async_timeout",
             mode=ExecutionMode.ASYNC,
             time_limit=0.05,
@@ -504,6 +534,7 @@ class TestExecutionModeAsync:
             await asyncio.sleep(1.0)
             return "should not complete"
 
+        consumer = PlanqConsumer(app, middlewares=[])
         route = consumer.routes["test.async_timeout"]
 
         with pytest.raises(HandlerTimeout) as exc_info:
@@ -520,13 +551,14 @@ class TestExecutionModeAsync:
         - Handler completes regardless of duration
         """
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
-        @consumer.task("test.async_no_limit", mode=ExecutionMode.ASYNC)
+        @app.task("test.async_no_limit", mode=ExecutionMode.ASYNC)
         async def handler():
             await asyncio.sleep(0.1)
             return "completed"
 
+        consumer = PlanqConsumer(app, middlewares=[])
         route = consumer.routes["test.async_no_limit"]
         result = await consumer._execute(route, None, "test.async_no_limit")
 
@@ -543,12 +575,13 @@ class TestExecutionModeThread:
     async def test_thread_mode_executes_sync_handler(self):
         """THREAD mode handler runs via asyncio.to_thread."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
-        @consumer.task("test.thread", mode=ExecutionMode.THREAD)
+        @app.task("test.thread", mode=ExecutionMode.THREAD)
         def sync_handler(x: int) -> int:
             return x * 2
 
+        consumer = PlanqConsumer(app, middlewares=[])
         route = consumer.routes["test.thread"]
         result = await consumer._execute(route, [21], "test.thread")
         assert result == 42
@@ -557,9 +590,9 @@ class TestExecutionModeThread:
     async def test_thread_mode_with_time_limit(self):
         """THREAD mode respects time_limit."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
-        @consumer.task(
+        @app.task(
             "test.thread_timeout",
             mode=ExecutionMode.THREAD,
             time_limit=0.01,
@@ -569,6 +602,7 @@ class TestExecutionModeThread:
 
             t.sleep(1.0)
 
+        consumer = PlanqConsumer(app, middlewares=[])
         route = consumer.routes["test.thread_timeout"]
         with pytest.raises(HandlerTimeout):
             await consumer._execute(route, None, "test.thread_timeout")
@@ -577,12 +611,13 @@ class TestExecutionModeThread:
     async def test_thread_mode_without_time_limit(self):
         """THREAD mode without time_limit calls to_thread directly."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
-        @consumer.task("test.thread_no_limit", mode=ExecutionMode.THREAD)
+        @app.task("test.thread_no_limit", mode=ExecutionMode.THREAD)
         def handler():
             return "done"
 
+        consumer = PlanqConsumer(app, middlewares=[])
         route = consumer.routes["test.thread_no_limit"]
         result = await consumer._execute(route, None, "test.thread_no_limit")
         assert result == "done"
@@ -598,7 +633,8 @@ class TestErrorHandling:
     async def test_method_not_found_raises_reject_message(self, mock_message):
         """Unknown method raises RejectMessage."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         msg = mock_message(method="unknown.method", id="123")
 
@@ -609,12 +645,13 @@ class TestErrorHandling:
     async def test_retry_message_propagates_unchanged(self, mock_message):
         """RetryMessage raised by handler propagates."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
-        @consumer.task("test.retry", mode=ExecutionMode.ASYNC)
+        @app.task("test.retry", mode=ExecutionMode.ASYNC)
         async def handler():
             raise RetryMessage(delay=5.0)
 
+        consumer = PlanqConsumer(app, middlewares=[])
         msg = mock_message(method="test.retry", id="123")
 
         with pytest.raises(RetryMessage) as exc_info:
@@ -628,9 +665,9 @@ class TestErrorHandling:
     ):
         """Generic exception raises RetryMessage if retries available."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
-        @consumer.task(
+        @app.task(
             "test.error",
             mode=ExecutionMode.ASYNC,
             max_retries=3,
@@ -639,6 +676,7 @@ class TestErrorHandling:
         async def handler():
             raise ValueError("something went wrong")
 
+        consumer = PlanqConsumer(app, middlewares=[])
         msg = mock_message(method="test.error", id="123", delivery_count=1)
 
         _planq_context.set(None)
@@ -654,9 +692,9 @@ class TestErrorHandling:
     ):
         """Generic exception returns error response if retries exhausted."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
-        @consumer.task(
+        @app.task(
             "test.exhausted",
             mode=ExecutionMode.ASYNC,
             max_retries=2,
@@ -665,6 +703,7 @@ class TestErrorHandling:
         async def handler():
             raise ValueError("permanent failure")
 
+        consumer = PlanqConsumer(app, middlewares=[])
         msg = mock_message(method="test.exhausted", id="123", delivery_count=3)
 
         response = await consumer._router_endpoint(msg)
@@ -678,9 +717,9 @@ class TestErrorHandling:
     async def test_handler_timeout_treated_as_retriable(self, mock_message):
         """HandlerTimeout is retriable if attempts remain."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
-        @consumer.task(
+        @app.task(
             "test.timeout",
             mode=ExecutionMode.ASYNC,
             max_retries=3,
@@ -690,6 +729,7 @@ class TestErrorHandling:
         async def handler():
             await asyncio.sleep(1.0)  # Exceeds time_limit
 
+        consumer = PlanqConsumer(app, middlewares=[])
         msg = mock_message(method="test.timeout", id="123", delivery_count=1)
 
         _planq_context.set(None)
@@ -707,9 +747,9 @@ class TestErrorHandling:
         from planq.exceptions import MaxRetriesExceeded
 
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
-        @consumer.task(
+        @app.task(
             "test.notification_fail",
             mode=ExecutionMode.ASYNC,
             max_retries=3,
@@ -718,6 +758,7 @@ class TestErrorHandling:
         async def handler():
             raise ValueError("permanent failure")
 
+        consumer = PlanqConsumer(app, middlewares=[])
         msg = mock_message(
             method="test.notification_fail", id=None, delivery_count=4
         )
@@ -733,9 +774,9 @@ class TestErrorHandling:
         from planq.exceptions import MaxRetriesExceeded
 
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
 
-        @consumer.task(
+        @app.task(
             "test.no_reply",
             mode=ExecutionMode.ASYNC,
             max_retries=3,
@@ -744,6 +785,7 @@ class TestErrorHandling:
         async def handler():
             raise ValueError("failure")
 
+        consumer = PlanqConsumer(app, middlewares=[])
         msg = mock_message(
             method="test.no_reply", id="123", reply_to=None, delivery_count=4
         )
@@ -762,7 +804,8 @@ class TestRejectCallbacks:
     async def test_on_reject_decorator_registers_callback(self):
         """on_reject decorator registers callback in _reject_callbacks list."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         @consumer.on_reject()
         async def my_callback(msg, exc):
@@ -774,7 +817,8 @@ class TestRejectCallbacks:
     async def test_on_reject_decorator_returns_function_unchanged(self):
         """Decorator returns original function unchanged."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         async def original_function(msg, exc):
             pass
@@ -786,7 +830,8 @@ class TestRejectCallbacks:
     async def test_on_reject_multiple_callbacks_registered(self):
         """Multiple callbacks can be registered and order is preserved."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         @consumer.on_reject()
         async def callback_one(msg, exc):
@@ -809,7 +854,8 @@ class TestRejectCallbacks:
     async def test_execute_reject_callbacks_with_empty_list(self, mock_message):
         """Early return when no callbacks registered."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         msg = mock_message(method="test", id=None)
         exc = ValueError("test error")
@@ -823,7 +869,8 @@ class TestRejectCallbacks:
     ):
         """All registered callbacks are called with msg and exc."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         callback_one = AsyncMock()
         callback_two = AsyncMock()
@@ -845,7 +892,8 @@ class TestRejectCallbacks:
     ):
         """Failing callback logs error but doesn't stop other callbacks."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         call_tracker = []
 
@@ -886,7 +934,8 @@ class TestRejectCallbacks:
         from planq.exceptions import MethodNotFound
 
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         captured_msg = None
         captured_exc = None
@@ -913,7 +962,8 @@ class TestRejectCallbacks:
     ):
         """Reject callbacks are called when message is rejected."""
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         callback_called = False
 
@@ -938,6 +988,7 @@ class TestMiddlewareIntegration:
     async def test_middleware_called_before_router(self, mock_message):
         """Middleware runs before router endpoint."""
         broker = MagicMock()
+        app = Planq(broker=broker)
 
         class TrackingMiddleware(Middleware):
             def __init__(self):
@@ -948,9 +999,9 @@ class TestMiddlewareIntegration:
                 return await call_next(msg)
 
         tracking = TrackingMiddleware()
-        consumer = PlanqConsumer(broker, middlewares=[tracking])
+        consumer = PlanqConsumer(app, middlewares=[tracking])
 
-        @consumer.task("test.middleware", mode=ExecutionMode.ASYNC)
+        @app.task("test.middleware", mode=ExecutionMode.ASYNC)
         async def handler():
             return "ok"
 
@@ -964,6 +1015,7 @@ class TestMiddlewareIntegration:
     async def test_middleware_order_preserved(self, mock_message):
         """Middleware executes in order: first registered runs first."""
         broker = MagicMock()
+        app = Planq(broker=broker)
         call_order = []
 
         class OrderMiddleware(Middleware):
@@ -978,9 +1030,9 @@ class TestMiddlewareIntegration:
 
         mw1 = OrderMiddleware("first")
         mw2 = OrderMiddleware("second")
-        consumer = PlanqConsumer(broker, middlewares=[mw1, mw2])
+        consumer = PlanqConsumer(app, middlewares=[mw1, mw2])
 
-        @consumer.task("test.order", mode=ExecutionMode.ASYNC)
+        @app.task("test.order", mode=ExecutionMode.ASYNC)
         async def handler():
             call_order.append("handler")
             return "ok"
@@ -1003,11 +1055,12 @@ class TestMiddlewareIntegration:
     ):
         """DeadlineMiddleware returns error response for expired requests."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[DeadlineMiddleware()])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[DeadlineMiddleware()])
 
         handler_called = False
 
-        @consumer.task("test.expired", mode=ExecutionMode.ASYNC)
+        @app.task("test.expired", mode=ExecutionMode.ASYNC)
         async def handler():
             nonlocal handler_called
             handler_called = True
@@ -1034,9 +1087,10 @@ class TestMiddlewareIntegration:
     async def test_empty_middleware_list_works(self, mock_message):
         """Empty middleware list goes directly to router."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.no_middleware", mode=ExecutionMode.ASYNC)
+        @app.task("test.no_middleware", mode=ExecutionMode.ASYNC)
         async def handler():
             return "direct"
 
@@ -1057,9 +1111,10 @@ class TestTransportIntegration:
     async def test_successful_message_acks(self, mock_message):
         """Successful processing calls msg.ack()."""
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.ack", mode=ExecutionMode.ASYNC)
+        @app.task("test.ack", mode=ExecutionMode.ASYNC)
         async def handler():
             return "success"
 
@@ -1075,9 +1130,10 @@ class TestTransportIntegration:
     async def test_retry_message_nacks_with_delay(self, mock_message):
         """RetryMessage calls msg.nack() with backoff delay."""
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task(
+        @app.task(
             "test.nack",
             mode=ExecutionMode.ASYNC,
             max_retries=3,
@@ -1110,9 +1166,10 @@ class TestTransportIntegration:
         - Covers branch 669->671 (exc.delay is not None)
         """
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.explicit_delay", mode=ExecutionMode.ASYNC)
+        @app.task("test.explicit_delay", mode=ExecutionMode.ASYNC)
         async def handler():
             raise RetryMessage(delay=10.0)
 
@@ -1129,7 +1186,8 @@ class TestTransportIntegration:
     async def test_reject_message_rejects(self, mock_message):
         """RejectMessage calls msg.reject()."""
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         msg = mock_message(method="unknown.method", id=None)
 
@@ -1143,9 +1201,10 @@ class TestTransportIntegration:
     async def test_response_published_to_reply_to_queue(self, mock_message):
         """Successful request publishes response to reply_to."""
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.publish", mode=ExecutionMode.ASYNC)
+        @app.task("test.publish", mode=ExecutionMode.ASYNC)
         async def handler():
             return {"result": "data"}
 
@@ -1171,10 +1230,11 @@ class TestTransportIntegration:
     async def test_response_publish_failure_nacks_message(self, mock_message):
         """Response publish failure causes nack, not ack."""
         broker = AsyncMock()
+        app = Planq(broker=broker)
         broker.publish.side_effect = ConnectionError("Publish failed")
-        consumer = PlanqConsumer(broker, middlewares=[])
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.publish_fail", mode=ExecutionMode.ASYNC)
+        @app.task("test.publish_fail", mode=ExecutionMode.ASYNC)
         async def handler():
             return "result"
 
@@ -1197,10 +1257,11 @@ class TestTransportIntegration:
     ):
         """Response publish failure logs error with exc_info and context."""
         broker = AsyncMock()
+        app = Planq(broker=broker)
         broker.publish.side_effect = ConnectionError("Publish failed")
-        consumer = PlanqConsumer(broker, middlewares=[])
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.log_fail", mode=ExecutionMode.ASYNC)
+        @app.task("test.log_fail", mode=ExecutionMode.ASYNC)
         async def handler():
             return "result"
 
@@ -1228,10 +1289,11 @@ class TestTransportIntegration:
     ):
         """Response publish failure returns early without ack."""
         broker = AsyncMock()
+        app = Planq(broker=broker)
         broker.publish.side_effect = ConnectionError("Publish failed")
-        consumer = PlanqConsumer(broker, middlewares=[])
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.no_ack", mode=ExecutionMode.ASYNC)
+        @app.task("test.no_ack", mode=ExecutionMode.ASYNC)
         async def handler():
             return "result"
 
@@ -1250,9 +1312,10 @@ class TestTransportIntegration:
     ):
         """Broker operation failure in _guarded_process logs error."""
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.broker_fail", mode=ExecutionMode.ASYNC)
+        @app.task("test.broker_fail", mode=ExecutionMode.ASYNC)
         async def handler():
             return "success"
 
@@ -1283,9 +1346,10 @@ class TestTransportIntegration:
     ):
         """Semaphore released after successful processing."""
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.success", mode=ExecutionMode.ASYNC)
+        @app.task("test.success", mode=ExecutionMode.ASYNC)
         async def handler():
             return "ok"
 
@@ -1306,9 +1370,10 @@ class TestTransportIntegration:
     ):
         """Semaphore released even when exception occurs."""
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.exception", mode=ExecutionMode.ASYNC)
+        @app.task("test.exception", mode=ExecutionMode.ASYNC)
         async def handler():
             return "ok"
 
@@ -1331,14 +1396,15 @@ class TestTransportIntegration:
     ):
         """Unhandled pipeline exception causes nack with backoff."""
         broker = AsyncMock()
+        app = Planq(broker=broker)
 
         class FailingMiddleware(Middleware):
             async def __call__(self, msg, call_next):
                 raise RuntimeError("Middleware error")
 
-        consumer = PlanqConsumer(broker, middlewares=[FailingMiddleware()])
+        consumer = PlanqConsumer(app, middlewares=[FailingMiddleware()])
 
-        @consumer.task("test.pipeline_fail", mode=ExecutionMode.ASYNC)
+        @app.task("test.pipeline_fail", mode=ExecutionMode.ASYNC)
         async def handler():
             return "ok"
 
@@ -1361,14 +1427,15 @@ class TestTransportIntegration:
     async def test_unhandled_pipeline_exception_logs_error(self, mock_message):
         """Unhandled pipeline exception logs error with exc_info."""
         broker = AsyncMock()
+        app = Planq(broker=broker)
 
         class FailingMiddleware(Middleware):
             async def __call__(self, msg, call_next):
                 raise RuntimeError("Middleware error")
 
-        consumer = PlanqConsumer(broker, middlewares=[FailingMiddleware()])
+        consumer = PlanqConsumer(app, middlewares=[FailingMiddleware()])
 
-        @consumer.task("test.log_pipeline", mode=ExecutionMode.ASYNC)
+        @app.task("test.log_pipeline", mode=ExecutionMode.ASYNC)
         async def handler():
             return "ok"
 
@@ -1388,9 +1455,10 @@ class TestTransportIntegration:
     async def test_response_includes_traceparent_header(self, mock_message):
         """Response published to reply_to includes traceparent."""
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.tp", mode=ExecutionMode.ASYNC)
+        @app.task("test.tp", mode=ExecutionMode.ASYNC)
         async def handler():
             return "ok"
 
@@ -1422,9 +1490,10 @@ class TestTransportIntegration:
     ):
         """Handler-set traceparent is preserved, not overwritten."""
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.tp_custom", mode=ExecutionMode.ASYNC)
+        @app.task("test.tp_custom", mode=ExecutionMode.ASYNC)
         async def handler():
             return TaskResult(
                 result="ok",
@@ -1450,9 +1519,10 @@ class TestTransportIntegration:
     ):
         """Notification (id=None) does not attempt publish."""
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.tp_notif", mode=ExecutionMode.ASYNC)
+        @app.task("test.tp_notif", mode=ExecutionMode.ASYNC)
         async def handler():
             return "ok"
 
@@ -1481,11 +1551,12 @@ class TestContextPopulation:
         from planq.context import get_planq_context
 
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         captured_ctx_msg = None
 
-        @consumer.task("test.ctx", mode=ExecutionMode.ASYNC)
+        @app.task("test.ctx", mode=ExecutionMode.ASYNC)
         async def handler():
             nonlocal captured_ctx_msg
             ctx = get_planq_context()
@@ -1504,11 +1575,12 @@ class TestContextPopulation:
         from planq.context import get_planq_context
 
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         captured_route = None
 
-        @consumer.task("test.route", mode=ExecutionMode.ASYNC, max_retries=5)
+        @app.task("test.route", mode=ExecutionMode.ASYNC, max_retries=5)
         async def handler():
             nonlocal captured_route
             ctx = get_planq_context()
@@ -1520,7 +1592,7 @@ class TestContextPopulation:
         await consumer._process_message(msg)
 
         assert captured_route is not None
-        assert captured_route.handler is handler
+        assert captured_route.handler is handler._func
         assert captured_route.max_retries == 5
 
     @pytest.mark.asyncio
@@ -1529,11 +1601,12 @@ class TestContextPopulation:
         from planq.context import get_planq_context
 
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         captured_max_attempts = None
 
-        @consumer.task("test.attempts", mode=ExecutionMode.ASYNC, max_retries=3)
+        @app.task("test.attempts", mode=ExecutionMode.ASYNC, max_retries=3)
         async def handler():
             nonlocal captured_max_attempts
             ctx = get_planq_context()
@@ -1554,11 +1627,12 @@ class TestContextPopulation:
         from planq.context import get_planq_context
 
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         captured_trace = None
 
-        @consumer.task("test.trace", mode=ExecutionMode.ASYNC)
+        @app.task("test.trace", mode=ExecutionMode.ASYNC)
         async def handler():
             nonlocal captured_trace
             ctx = get_planq_context()
@@ -1587,11 +1661,12 @@ class TestContextPopulation:
         from planq.context import get_planq_context
 
         broker = AsyncMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         captured_trace = None
 
-        @consumer.task("test.no_trace", mode=ExecutionMode.ASYNC)
+        @app.task("test.no_trace", mode=ExecutionMode.ASYNC)
         async def handler():
             nonlocal captured_trace
             ctx = get_planq_context()
@@ -1752,13 +1827,15 @@ class TestTaskRouteRetryOn:
         assert route.retry_on is None
 
     def test_task_decorator_stores_retry_on(self):
-        """@consumer.task() stores retry_on parameter."""
+        """@app.task() stores retry_on parameter."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker)
+        app = Planq(broker=broker)
 
-        @consumer.task("test.retry_on", retry_on=ValueError)
+        @app.task("test.retry_on", retry_on=ValueError)
         async def handler():
             pass
+
+        consumer = PlanqConsumer(app, middlewares=[])
 
         assert consumer.routes["test.retry_on"].retry_on is ValueError
 
@@ -1770,9 +1847,10 @@ class TestRouterEndpointRetryOn:
     async def test_retry_on_none_rejects_immediately(self, mock_message):
         """retry_on=None means no retries, reject immediately."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task(
+        @app.task(
             "test.no_retry",
             mode=ExecutionMode.ASYNC,
             max_retries=3,
@@ -1790,9 +1868,10 @@ class TestRouterEndpointRetryOn:
     async def test_retry_on_matches_exception_retries(self, mock_message):
         """retry_on=ValueError matches ValueError, retries."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task(
+        @app.task(
             "test.match_retry",
             mode=ExecutionMode.ASYNC,
             max_retries=3,
@@ -1814,9 +1893,10 @@ class TestRouterEndpointRetryOn:
     async def test_retry_on_does_not_match_rejects(self, mock_message):
         """retry_on=ValueError doesn't match KeyError, rejects."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task(
+        @app.task(
             "test.no_match",
             mode=ExecutionMode.ASYNC,
             max_retries=3,
@@ -1836,9 +1916,10 @@ class TestRouterEndpointRetryOn:
     ):
         """retry_on matches but max_retries exhausted returns error."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task(
+        @app.task(
             "test.exhausted",
             mode=ExecutionMode.ASYNC,
             max_retries=2,
@@ -1860,9 +1941,10 @@ class TestRouterEndpointRetryOn:
     async def test_explicit_retry_message_bypasses_retry_on(self, mock_message):
         """Handler can raise RetryMessage to bypass retry_on check."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task(
+        @app.task(
             "test.explicit_retry",
             mode=ExecutionMode.ASYNC,
             retry_on=None,  # No retries
@@ -1883,9 +1965,10 @@ class TestRouterEndpointRetryOn:
     async def test_retry_on_callable_true_retries(self, mock_message):
         """retry_on callable returning True retries."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task(
+        @app.task(
             "test.callable_true",
             mode=ExecutionMode.ASYNC,
             max_retries=3,
@@ -1909,9 +1992,10 @@ class TestRouterEndpointRetryOn:
     async def test_retry_on_callable_false_rejects(self, mock_message):
         """retry_on callable returning False rejects."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task(
+        @app.task(
             "test.callable_false",
             mode=ExecutionMode.ASYNC,
             max_retries=3,
@@ -1931,9 +2015,10 @@ class TestRouterEndpointRetryOn:
     async def test_retry_on_list_with_multiple_types(self, mock_message):
         """retry_on list matches any exception type in list."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task(
+        @app.task(
             "test.multi_types",
             mode=ExecutionMode.ASYNC,
             max_retries=3,
@@ -2030,9 +2115,10 @@ class TestExecutionModeProcess:
         from concurrent.futures import Future
 
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.process", mode=ExecutionMode.PROCESS)
+        @app.task("test.process", mode=ExecutionMode.PROCESS)
         def handler(x):
             return x * 2
 
@@ -2055,9 +2141,10 @@ class TestExecutionModeProcess:
     async def test_execute_process_no_pool_raises(self):
         """PROCESS mode without pool raises RuntimeError."""
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.no_pool", mode=ExecutionMode.PROCESS)
+        @app.task("test.no_pool", mode=ExecutionMode.PROCESS)
         def handler():
             return 1
 
@@ -2078,13 +2165,14 @@ class TestExecutionModeProcess:
         Uses mock.patch to simulate Windows on non-Windows systems.
         """
         broker = MagicMock()
-        consumer = PlanqConsumer(broker, middlewares=[])
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
 
         # Mock the pool to avoid multiprocessing issues with coverage
         mock_pool = MagicMock()
         consumer._pool = mock_pool
 
-        @consumer.task(
+        @app.task(
             "test.windows_check",
             mode=ExecutionMode.PROCESS,
             time_limit=1.0,
@@ -2115,6 +2203,7 @@ class TestSignalHandlingAndShutdown:
         """SIGINT handler is registered during run()."""
 
         broker = AsyncMock()
+        app = Planq(broker=broker)
 
         # Create empty async generator for consume
         async def empty_consume(queue, prefetch):
@@ -2122,7 +2211,7 @@ class TestSignalHandlingAndShutdown:
             yield  # Make it a generator
 
         broker.consume = empty_consume
-        consumer = PlanqConsumer(broker, middlewares=[])
+        consumer = PlanqConsumer(app, middlewares=[])
 
         with patch.object(asyncio, "get_running_loop") as mock_get_loop:
             loop = MagicMock()
@@ -2145,13 +2234,14 @@ class TestSignalHandlingAndShutdown:
         """SIGTERM handler is registered during run()."""
 
         broker = AsyncMock()
+        app = Planq(broker=broker)
 
         async def empty_consume(queue, prefetch):
             return
             yield
 
         broker.consume = empty_consume
-        consumer = PlanqConsumer(broker, middlewares=[])
+        consumer = PlanqConsumer(app, middlewares=[])
 
         with patch.object(asyncio, "get_running_loop") as mock_get_loop:
             loop = MagicMock()
@@ -2177,6 +2267,7 @@ class TestSignalHandlingAndShutdown:
     async def test_run_shutdown_breaks_consume_loop(self, mock_message):
         """Setting shutdown event breaks the consume loop."""
         broker = AsyncMock()
+        app = Planq(broker=broker)
         messages_processed = 0
 
         async def yielding_consume(queue, prefetch):
@@ -2184,9 +2275,9 @@ class TestSignalHandlingAndShutdown:
                 yield mock_message(method="test.task", id=None)
 
         broker.consume = yielding_consume
-        consumer = PlanqConsumer(broker, middlewares=[])
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.task", mode=ExecutionMode.ASYNC)
+        @app.task("test.task", mode=ExecutionMode.ASYNC)
         async def handler():
             nonlocal messages_processed
             messages_processed += 1
@@ -2210,6 +2301,7 @@ class TestSignalHandlingAndShutdown:
     async def test_run_shutdown_event_breaks_consume_loop(self, mock_message):
         """shutdown_event.is_set() breaks the consume loop (line 735)."""
         broker = AsyncMock()
+        app = Planq(broker=broker)
         messages_dispatched = 0
 
         # Capture the shutdown Event created inside run()
@@ -2228,9 +2320,9 @@ class TestSignalHandlingAndShutdown:
                     shutdown_ref["event"].set()
 
         broker.consume = controlled_consume
-        consumer = PlanqConsumer(broker, middlewares=[])
+        consumer = PlanqConsumer(app, middlewares=[])
 
-        @consumer.task("test.task", mode=ExecutionMode.ASYNC)
+        @app.task("test.task", mode=ExecutionMode.ASYNC)
         async def handler():
             nonlocal messages_dispatched
             messages_dispatched += 1
@@ -2245,6 +2337,7 @@ class TestSignalHandlingAndShutdown:
     async def test_run_drains_inflight_messages_before_exit(self, mock_message):
         """In-flight messages complete before shutdown."""
         broker = AsyncMock()
+        app = Planq(broker=broker)
         handler_started = []
         handler_completed = []
 
@@ -2254,9 +2347,9 @@ class TestSignalHandlingAndShutdown:
 
         broker.consume = yielding_consume
         settings = ConsumerSettings(concurrency=2)
-        consumer = PlanqConsumer(broker, settings=settings, middlewares=[])
+        consumer = PlanqConsumer(app, settings=settings, middlewares=[])
 
-        @consumer.task("test.slow", mode=ExecutionMode.ASYNC)
+        @app.task("test.slow", mode=ExecutionMode.ASYNC)
         async def slow_handler():
             handler_started.append(1)
             await asyncio.sleep(0.05)
@@ -2280,6 +2373,7 @@ class TestSignalHandlingAndShutdown:
     async def test_run_shuts_down_process_pool_on_exit(self):
         """Process pool is shut down in finally block."""
         broker = AsyncMock()
+        app = Planq(broker=broker)
 
         async def empty_consume(queue, prefetch):
             return
@@ -2287,7 +2381,7 @@ class TestSignalHandlingAndShutdown:
 
         broker.consume = empty_consume
         settings = ConsumerSettings(process_workers=2)
-        consumer = PlanqConsumer(broker, settings=settings, middlewares=[])
+        consumer = PlanqConsumer(app, settings=settings, middlewares=[])
 
         # Mock the pool object instead of creating real one
         mock_pool = MagicMock()
@@ -2305,6 +2399,7 @@ class TestSignalHandlingAndShutdown:
     async def test_run_shuts_down_process_pool_even_on_exception(self):
         """Process pool shutdown occurs even when exception raised."""
         broker = AsyncMock()
+        app = Planq(broker=broker)
 
         async def failing_consume(queue, prefetch):
             # Create message manually (can't use fixture in async generator)
@@ -2326,9 +2421,9 @@ class TestSignalHandlingAndShutdown:
 
         broker.consume = failing_consume
         settings = ConsumerSettings(process_workers=2)
-        consumer = PlanqConsumer(broker, settings=settings, middlewares=[])
+        consumer = PlanqConsumer(app, settings=settings, middlewares=[])
 
-        @consumer.task("test", mode=ExecutionMode.ASYNC)
+        @app.task("test", mode=ExecutionMode.ASYNC)
         async def handler():
             return "ok"
 

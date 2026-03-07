@@ -102,6 +102,7 @@ class TaskRoute(BaseModel):
     Attributes:
         handler: The callable registered for this method name.
         mode: Execution strategy.
+        queue_name: Target queue name for publishing this task.
         time_limit: Max wall-clock seconds the handler may run.
             None means unlimited.
         grace_period: Seconds after SIGALRM before SIGKILL in PROCESS mode.
@@ -120,6 +121,10 @@ class TaskRoute(BaseModel):
 
     # Execution strategy.
     mode: ExecutionMode
+
+    # Target queue name for publishing this task.
+    # Defaults to "default".
+    queue_name: str = "default"
 
     # Maximum allowed execution time in seconds.
     # None means unlimited.
@@ -146,6 +151,14 @@ class TaskRoute(BaseModel):
     # Cached parameter metadata from signature analysis.
     # Populated automatically by the task() decorator.
     param_meta: HandlerSignature | None = None
+
+    @field_validator("queue_name")
+    @classmethod
+    def validate_queue_name(cls, v: str) -> str:
+        """Ensure queue_name is not empty or whitespace-only."""
+        if not v.strip():
+            raise ValueError("queue_name must not be empty")
+        return v
 
     @field_validator("max_retries")
     @classmethod
@@ -250,7 +263,7 @@ class TaskResult:
 
     Example::
 
-        @consumer.task("my.method")
+        @app.task(name="my.method")
         async def handle(name: str) -> TaskResult:
             return TaskResult(
                 result={"greeting": f"Hi {name}"},

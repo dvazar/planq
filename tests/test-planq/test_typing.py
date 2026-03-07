@@ -1,113 +1,100 @@
-"""Type checking tests for ParamSpec-enhanced decorators.
+"""Type checking tests for @app.task() decorator.
 
-These tests verify that type checkers (mypy/pyright) correctly
-understand handler signatures through the @consumer.task decorator.
+These tests verify that @app.task() correctly wraps handlers
+in PlanqTask objects and that the wrapped functions remain
+callable at runtime.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
 
-from planq import PlanqConsumer
+from planq.app import Planq, PlanqTask
+from planq.consumer import PlanqConsumer
 from planq.enums import ExecutionMode
 
-if TYPE_CHECKING:
-    from planq.broker import BaseBroker
 
+def test_async_mode_returns_planq_task() -> None:
+    """ASYNC mode returns a PlanqTask wrapper."""
+    broker = MagicMock()
+    app = Planq(broker=broker)
 
-def test_async_mode_preserves_signature() -> None:
-    """ASYNC mode preserves async function signature."""
-    broker: BaseBroker = MagicMock()  # type: ignore[assignment]
-    consumer = PlanqConsumer(broker)
-
-    @consumer.task("test", mode=ExecutionMode.ASYNC)
+    @app.task("test", mode=ExecutionMode.ASYNC)
     async def handler(x: int, y: str) -> bool:
         return True
 
-    # This test verifies type-checking behavior at compile time.
-    # The decorator should preserve the handler's signature.
-    assert handler is not None
+    assert isinstance(handler, PlanqTask)
+    assert handler._func is not None
 
 
-def test_thread_mode_sync_function() -> None:
-    """THREAD mode expects sync function."""
-    broker: BaseBroker = MagicMock()  # type: ignore[assignment]
-    consumer = PlanqConsumer(broker)
+def test_thread_mode_returns_planq_task() -> None:
+    """THREAD mode returns a PlanqTask wrapper."""
+    broker = MagicMock()
+    app = Planq(broker=broker)
 
-    @consumer.task("test", mode=ExecutionMode.THREAD)
+    @app.task("test", mode=ExecutionMode.THREAD)
     def handler(x: int) -> int:
         return x * 2
 
-    # This test verifies type-checking behavior at compile time.
-    # The decorator should preserve the handler's signature.
-    assert handler is not None
+    assert isinstance(handler, PlanqTask)
 
 
-def test_process_mode_sync_function() -> None:
-    """PROCESS mode expects sync function."""
-    broker: BaseBroker = MagicMock()  # type: ignore[assignment]
-    consumer = PlanqConsumer(broker, process_workers=2)
+def test_process_mode_returns_planq_task() -> None:
+    """PROCESS mode returns a PlanqTask wrapper."""
+    broker = MagicMock()
+    app = Planq(broker=broker)
 
-    @consumer.task("test", mode=ExecutionMode.PROCESS)
+    @app.task("test", mode=ExecutionMode.PROCESS)
     def handler(data: list[int]) -> int:
         return sum(data)
 
-    # This test verifies type-checking behavior at compile time.
-    # The decorator should preserve the handler's signature.
-    assert handler is not None
+    assert isinstance(handler, PlanqTask)
 
 
 def test_variadic_args() -> None:
-    """ParamSpec preserves *args and **kwargs."""
-    broker: BaseBroker = MagicMock()  # type: ignore[assignment]
-    consumer = PlanqConsumer(broker)
+    """PlanqTask wraps handlers with *args and **kwargs."""
+    broker = MagicMock()
+    app = Planq(broker=broker)
 
-    @consumer.task("test", mode=ExecutionMode.ASYNC)
+    @app.task("test", mode=ExecutionMode.ASYNC)
     async def handler(*args: int, **kwargs: str) -> tuple[int, ...]:
         return args
 
-    # This test verifies type-checking behavior at compile time.
-    # The decorator should preserve the handler's signature.
-    assert handler is not None
+    assert isinstance(handler, PlanqTask)
 
 
 def test_optional_parameters() -> None:
-    """Type hints work with optional parameters."""
-    broker: BaseBroker = MagicMock()  # type: ignore[assignment]
-    consumer = PlanqConsumer(broker)
+    """PlanqTask wraps handlers with optional parameters."""
+    broker = MagicMock()
+    app = Planq(broker=broker)
 
-    @consumer.task("test", mode=ExecutionMode.ASYNC)
+    @app.task("test", mode=ExecutionMode.ASYNC)
     async def handler(x: int, y: str = "default") -> str:
         return f"{x}{y}"
 
-    # This test verifies type-checking behavior at compile time.
-    # The decorator should preserve the handler's signature.
-    assert handler is not None
+    assert isinstance(handler, PlanqTask)
 
 
 def test_no_return_type() -> None:
-    """Type hints work for functions with no explicit return."""
-    broker: BaseBroker = MagicMock()  # type: ignore[assignment]
-    consumer = PlanqConsumer(broker)
+    """PlanqTask wraps handlers with no explicit return."""
+    broker = MagicMock()
+    app = Planq(broker=broker)
 
-    @consumer.task("test", mode=ExecutionMode.ASYNC)
+    @app.task("test", mode=ExecutionMode.ASYNC)
     async def handler(value: int) -> None:
         print(value)
 
-    # This test verifies type-checking behavior at compile time.
-    # The decorator should preserve the handler's signature.
-    assert handler is not None
+    assert isinstance(handler, PlanqTask)
 
 
 def test_complex_types() -> None:
-    """Type hints work with complex type annotations."""
-    broker: BaseBroker = MagicMock()  # type: ignore[assignment]
-    consumer = PlanqConsumer(broker)
+    """PlanqTask wraps handlers with complex type annotations."""
+    broker = MagicMock()
+    app = Planq(broker=broker)
 
-    @consumer.task("test", mode=ExecutionMode.THREAD)
+    @app.task("test", mode=ExecutionMode.THREAD)
     def handler(
         items: list[dict[str, int]], mapping: dict[str, list[str]]
     ) -> tuple[list[int], dict[str, str]]:
@@ -115,55 +102,52 @@ def test_complex_types() -> None:
         result_dict = {k: ",".join(v) for k, v in mapping.items()}
         return result_list, result_dict
 
-    # This test verifies type-checking behavior at compile time.
-    # The decorator should preserve the handler's signature.
-    assert handler is not None
+    assert isinstance(handler, PlanqTask)
 
 
 def test_handler_alias() -> None:
-    """The handler alias should have the same type hints as task."""
-    broker: BaseBroker = MagicMock()  # type: ignore[assignment]
-    consumer = PlanqConsumer(broker)
+    """app.handler() is an alias for app.task()."""
+    broker = MagicMock()
+    app = Planq(broker=broker)
 
-    @consumer.handler("test", mode=ExecutionMode.ASYNC)
+    @app.handler("test", mode=ExecutionMode.ASYNC)
     async def handler(x: int) -> str:
         return str(x)
 
-    # This test verifies type-checking behavior at compile time.
-    # The handler alias should work identically to task.
-    assert handler is not None
+    assert isinstance(handler, PlanqTask)
+    assert "test" in app.routes
 
 
 def test_default_mode() -> None:
-    """Type hints work when mode is not specified (defaults to ASYNC)."""
-    broker: BaseBroker = MagicMock()  # type: ignore[assignment]
-    consumer = PlanqConsumer(broker)
+    """Default mode (ASYNC) works without explicit specification."""
+    broker = MagicMock()
+    app = Planq(broker=broker)
 
-    @consumer.task("test")
+    @app.task("test")
     async def handler(value: str) -> int:
         return len(value)
 
-    # This test verifies type-checking behavior at compile time.
-    # Default mode should be treated as ASYNC.
-    assert handler is not None
+    assert isinstance(handler, PlanqTask)
 
 
 @pytest.mark.asyncio
 async def test_typed_handler_runtime_behavior() -> None:
-    """Type hints don't affect runtime behavior."""
-    broker: BaseBroker = MagicMock()  # type: ignore[assignment]
-    consumer = PlanqConsumer(broker)
+    """PlanqTask preserves runtime behavior of the handler."""
+    broker = MagicMock()
+    app = Planq(broker=broker)
 
-    @consumer.task("typed.method", mode=ExecutionMode.ASYNC)
+    @app.task("typed.method", mode=ExecutionMode.ASYNC)
     async def add(x: int, y: int) -> int:
         return x + y
+
+    consumer = PlanqConsumer(app, middlewares=[])
 
     # Verify registration works
     assert "typed.method" in consumer.routes
     route = consumer.routes["typed.method"]
-    assert route.handler is add
+    assert route.handler is add._func
     assert route.mode == ExecutionMode.ASYNC
 
-    # Verify the handler still works at runtime
+    # Verify the handler still works at runtime (PlanqTask.__call__)
     result = await add(2, 3)
     assert result == 5

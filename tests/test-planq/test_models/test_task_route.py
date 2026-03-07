@@ -16,7 +16,6 @@ from .conftest import (
     valid_task_route_kwargs,
 )
 
-
 # === Layer 1: Parametrized Edge Cases ===
 
 
@@ -213,6 +212,45 @@ class TestTaskRouteValidation:
         assert route.grace_period == grace_period
 
 
+class TestQueueNameValidation:
+    """Validation tests for the queue_name field."""
+
+    def test_queue_name_default(self):
+        """TaskRoute.queue_name defaults to 'default'."""
+        route = TaskRoute(
+            handler=lambda: None,
+            mode=ExecutionMode.ASYNC,
+        )
+        assert route.queue_name == "default"
+
+    def test_queue_name_custom(self):
+        """TaskRoute accepts custom queue_name."""
+        route = TaskRoute(
+            handler=lambda: None,
+            mode=ExecutionMode.ASYNC,
+            queue_name="images",
+        )
+        assert route.queue_name == "images"
+
+    def test_queue_name_empty_string_rejected(self):
+        """Empty queue_name is rejected."""
+        with pytest.raises(ValidationError):
+            TaskRoute(
+                handler=lambda: None,
+                mode=ExecutionMode.ASYNC,
+                queue_name="",
+            )
+
+    def test_queue_name_whitespace_only_rejected(self):
+        """Whitespace-only queue_name is rejected."""
+        with pytest.raises(ValidationError):
+            TaskRoute(
+                handler=lambda: None,
+                mode=ExecutionMode.ASYNC,
+                queue_name="   ",
+            )
+
+
 class TestTaskRouteConstruction:
     """Valid construction scenarios."""
 
@@ -224,6 +262,7 @@ class TestTaskRouteConstruction:
         assert route.max_retries is None
         assert route.time_limit is None
         assert route.grace_period is None
+        assert route.queue_name == "default"
 
     def test_all_fields_custom(self, mock_handler):
         """Can construct with all fields customized."""
