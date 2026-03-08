@@ -58,6 +58,7 @@ if TYPE_CHECKING:
 
 logger = get_planq_logger(__name__)
 
+#: Fallback max retries when neither route nor consumer settings specify one.
 DEFAULT_MAX_RETRIES: Final[int] = 3
 
 
@@ -144,6 +145,11 @@ class _ProcessPool:
     """
 
     def __init__(self, max_workers: int) -> None:
+        """Initialize the pool with a monitoring queue and background thread.
+
+        Args:
+            max_workers: Maximum concurrent worker processes.
+        """
         self._manager = multiprocessing.Manager()
         self._monitoring_queue = self._manager.Queue()
         self._executor = ProcessPoolExecutor(max_workers=max_workers)

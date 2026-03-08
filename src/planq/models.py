@@ -65,6 +65,7 @@ class ConsumerSettings(BaseModel):
     @field_validator("concurrency")
     @classmethod
     def validate_concurrency(cls, v: int) -> int:
+        """Ensure concurrency is a positive integer."""
         if v <= 0:
             raise ValueError("concurrency must be positive")
         return v
@@ -72,6 +73,7 @@ class ConsumerSettings(BaseModel):
     @field_validator("max_retries")
     @classmethod
     def validate_max_retries(cls, v: int | None) -> int | None:
+        """Ensure max_retries is non-negative or None."""
         if v is not None and v < 0:
             raise ValueError(
                 "max_retries must be non-negative "
@@ -87,6 +89,7 @@ class ConsumerSettings(BaseModel):
     )
     @classmethod
     def validate_positive_float(cls, v: float, info: ValidationInfo) -> float:
+        """Ensure float field is finite and positive."""
         if math.isnan(v):
             raise ValueError(f"{info.field_name} cannot be NaN")
         if math.isinf(v):
@@ -163,6 +166,7 @@ class TaskRoute(BaseModel):
     @field_validator("max_retries")
     @classmethod
     def validate_max_retries(cls, v: int | None) -> int | None:
+        """Ensure max_retries is non-negative or None."""
         if v is not None and v < 0:
             raise ValueError(
                 "max_retries must be non-negative "
@@ -175,6 +179,7 @@ class TaskRoute(BaseModel):
     def validate_positive_optional_float(
         cls, v: float | None, info: ValidationInfo
     ) -> float | None:
+        """Ensure optional float field is finite and positive when set."""
         if v is not None:
             if math.isnan(v):
                 raise ValueError(f"{info.field_name} cannot be NaN")
@@ -212,6 +217,7 @@ class JsonRpcRequest(BaseModel):
     @field_validator("id")
     @classmethod
     def validate_empty_string(cls, v: JsonRpcId) -> JsonRpcId:
+        """Coerce empty string id to None (treat as notification)."""
         if v == "":
             return None
         return v

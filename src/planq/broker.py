@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 logger = get_planq_logger(__name__)
 
+#: Maximum bytes of a poison message body included in log output.
 MAX_LOG_PAYLOAD_SIZE: Final[int] = 1000
 
 

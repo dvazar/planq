@@ -16,8 +16,11 @@ logger = logging.getLogger("planq")
 # Prevent "No handlers found" warning if user doesn't configure logging
 logger.addHandler(logging.NullHandler())
 
+#: Saved LogRecordFactory before instrument_logging() patches it.
 _original_factory: Any = None
+#: Global PlanqContextFilter set by instrument_logging(), or None.
 _global_filter: PlanqContextFilter | None = None
+#: Shared default filter instance used by get_planq_logger().
 _default_filter: Final[PlanqContextFilter] = PlanqContextFilter()
 
 

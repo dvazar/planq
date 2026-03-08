@@ -43,6 +43,7 @@ class PlanqContext:
     """
 
     def __init__(self) -> None:
+        """Initialize an empty context with no message or route bound."""
         self.trace: TraceContext | None = None
         self.msg: BrokerMessage | None = None
         self.route: TaskRoute | None = None

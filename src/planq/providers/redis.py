@@ -66,6 +66,9 @@ _TRANSIENT_ERRORS = (ConnectionError, TimeoutError)
 ConnectionError: connection lost/refused/DNS failure.
 TimeoutError: socket timeout (after redis-py internal retries)."""
 
+#: Lua script that atomically migrates ready messages from the
+#: delayed ZSET to the stream. Runs inside Redis to avoid
+#: race conditions between scheduler polls.
 MIGRATE_LUA: Final[str] = """
 local delayed_key = KEYS[1]
 local stream_key = KEYS[2]

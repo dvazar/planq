@@ -311,7 +311,9 @@ class Planq:
 
         return decorator
 
+    #: Alias for :meth:`task` — semantic name for message handlers.
     handler = task
+    #: Alias for :meth:`task` — semantic name for RPC-style handlers.
     rpc = task
 
 
