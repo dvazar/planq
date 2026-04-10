@@ -2438,3 +2438,68 @@ class TestSignalHandlingAndShutdown:
 
         # Verify shutdown called despite exception
         mock_pool.shutdown.assert_called_once_with(wait=True)
+
+
+class TestRunMany:
+    """Tests for run() multi-queue consumption."""
+
+    @pytest.mark.asyncio
+    async def test_run_many_consumes_from_multiple_queues(
+        self,
+    ) -> None:
+        """run() processes messages from all queues."""
+        broker = MagicMock()
+        broker.connect = AsyncMock()
+        broker.disconnect = AsyncMock()
+        broker.__aenter__ = AsyncMock(return_value=broker)
+        broker.__aexit__ = AsyncMock(return_value=False)
+
+        consumed_queues: list[str] = []
+
+        async def fake_consume(queue, *, prefetch=10):
+            consumed_queues.append(queue)
+            return
+            yield  # make it a generator
+
+        broker.consume = fake_consume
+
+        app = Planq(broker)
+
+        @app.task(name="test.task")
+        async def dummy() -> None:
+            pass
+
+        consumer = PlanqConsumer(app, process_workers=None, middlewares=[])
+
+        await consumer.run("q1", "q2")
+        assert "q1" in consumed_queues
+        assert "q2" in consumed_queues
+
+    @pytest.mark.asyncio
+    async def test_run_delegates_to_run_many(self) -> None:
+        """run(queue) delegates to run([queue])."""
+        broker = MagicMock()
+        broker.__aenter__ = AsyncMock(return_value=broker)
+        broker.__aexit__ = AsyncMock(return_value=False)
+
+        async def fake_consume(queue, *, prefetch=10):
+            return
+            yield
+
+        broker.consume = fake_consume
+
+        app = Planq(broker)
+        consumer = PlanqConsumer(app, process_workers=None, middlewares=[])
+
+        called_with: tuple[str, ...] | None = None
+
+        original_run_many = consumer.run
+
+        async def mock_run_many(*queues: str) -> None:
+            nonlocal called_with
+            called_with = queues
+            await original_run_many(*queues)
+
+        consumer.run = mock_run_many
+        await consumer.run("myqueue")
+        assert called_with == ("myqueue",)

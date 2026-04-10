@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -40,6 +41,8 @@ def _make_broker() -> MagicMock:
     """Create a MagicMock broker with an AsyncMock publish."""
     broker = MagicMock()
     broker.publish = AsyncMock(return_value="msg-id-123")
+    broker.connect = AsyncMock()
+    broker.disconnect = AsyncMock()
     return broker
 
 
@@ -687,3 +690,255 @@ class TestPlanqApp:
         route = app.routes["greet"]
         assert route.param_meta is not None
         assert len(route.param_meta.params) == 2
+
+
+# === TestEagerMode ===
+
+
+class TestEagerMode:
+    """Tests for Planq eager mode (no broker)."""
+
+    def test_planq_eager_flag_default_false(self) -> None:
+        broker = _make_broker()
+        app = Planq(broker)
+        assert app.eager is False
+
+    def test_planq_eager_flag_true(self) -> None:
+        broker = _make_broker()
+        app = Planq(broker, eager=True)
+        assert app.eager is True
+
+    @pytest.mark.asyncio
+    async def test_eager_send_calls_handler_directly(
+        self,
+    ) -> None:
+        broker = _make_broker()
+        app = Planq(broker, eager=True)
+
+        called_with: dict[str, Any] = {}
+
+        @app.task(name="test.echo")
+        async def echo(msg: str) -> str:
+            called_with["msg"] = msg
+            return msg
+
+        result = await echo.send(msg="hello")
+        assert called_with["msg"] == "hello"
+        assert result == "eager"
+        broker.publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_eager_send_via_options(self) -> None:
+        broker = _make_broker()
+        app = Planq(broker, eager=True)
+
+        called = False
+
+        @app.task(name="test.work")
+        async def work(x: int) -> int:
+            nonlocal called
+            called = True
+            return x * 2
+
+        result = await work.options(delay=10).send(x=5)
+        assert called
+        assert result == "eager"
+        broker.publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_eager_sync_handler(self) -> None:
+        broker = _make_broker()
+        app = Planq(broker, eager=True)
+
+        @app.task(name="test.sync")
+        def sync_task(n: int) -> int:
+            return n + 1
+
+        result = await sync_task.send(n=5)
+        assert result == "eager"
+
+    @pytest.mark.asyncio
+    async def test_eager_send_with_kwargs(self) -> None:
+        broker = _make_broker()
+        app = Planq(broker, eager=True)
+
+        received_args: dict[str, Any] = {}
+
+        @app.task(name="test.kwargs")
+        async def kwargs_task(a: int, b: int) -> int:
+            received_args.update({"a": a, "b": b})
+            return a + b
+
+        result = await kwargs_task.send(a=1, b=2)
+        assert received_args == {"a": 1, "b": 2}
+        assert result == "eager"
+
+    @pytest.mark.asyncio
+    async def test_eager_send_with_list_params(
+        self,
+    ) -> None:
+        """Eager mode handles list params (positional)."""
+        broker = _make_broker()
+        app = Planq(broker, eager=True)
+
+        received: list[Any] = []
+
+        @app.task(name="test.list_params")
+        async def list_task(a: int, b: int) -> None:
+            received.extend([a, b])
+
+        request = JsonRpcRequest(
+            jsonrpc="2.0",
+            method="test.list_params",
+            params=[1, 2],
+            id=None,
+        )
+        result = await list_task._send(request, {})
+        assert received == [1, 2]
+        assert result == "eager"
+
+    @pytest.mark.asyncio
+    async def test_eager_send_with_none_params(
+        self,
+    ) -> None:
+        """Eager mode handles None params (no arguments)."""
+        broker = _make_broker()
+        app = Planq(broker, eager=True)
+
+        called = False
+
+        @app.task(name="test.no_params")
+        async def no_params_task() -> None:
+            nonlocal called
+            called = True
+
+        request = JsonRpcRequest(
+            jsonrpc="2.0",
+            method="test.no_params",
+            params=None,
+            id=None,
+        )
+        result = await no_params_task._send(request, {})
+        assert called
+        assert result == "eager"
+
+    @pytest.mark.asyncio
+    async def test_non_eager_publishes_normally(
+        self,
+    ) -> None:
+        broker = _make_broker()
+        app = Planq(broker, eager=False)
+        app._connected = True  # skip lazy connect
+
+        @app.task(name="test.normal")
+        async def normal(x: int) -> int:
+            return x
+
+        await normal.send(x=1)
+        broker.publish.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_lazy_connect_reuses_existing_lock(
+        self,
+    ) -> None:
+        """Second send reuses the existing _connect_lock."""
+        broker = _make_broker()
+        app = Planq(broker, eager=False)
+
+        @app.task(name="test.reuse_lock")
+        async def task_a(x: int) -> int:
+            return x
+
+        await task_a.send(x=1)
+        assert app._connect_lock is not None
+        lock = app._connect_lock
+
+        await task_a.send(x=2)
+        assert app._connect_lock is lock
+
+    @pytest.mark.asyncio
+    async def test_lazy_connect_inner_check_skips(
+        self,
+    ) -> None:
+        """Inner _connected check skips connect when first
+        coroutine already set the flag inside the lock."""
+        import asyncio as _asyncio
+
+        broker = _make_broker()
+        app = Planq(broker, eager=False)
+
+        @app.task(name="test.double")
+        async def task_b(x: int) -> int:
+            return x
+
+        # Make connect slow so the second coro enters the outer
+        # if-block while the first holds the lock.
+        entered = _asyncio.Event()
+        proceed = _asyncio.Event()
+
+        async def _slow_connect() -> None:
+            entered.set()
+            await proceed.wait()
+
+        broker.connect = AsyncMock(side_effect=_slow_connect)
+        app._connected = False
+
+        async def _first() -> str:
+            return await task_b.send(x=1)
+
+        async def _second() -> str:
+            # Wait until first coro is inside connect().
+            await entered.wait()
+            # Now first coro holds the lock and _connected is
+            # still False.  The second coro enters the outer
+            # if-block (sees _connected=False) and blocks on
+            # the lock.  When first coro finishes, it sets
+            # _connected=True.  Second coro then enters the
+            # lock and sees _connected=True → skips connect.
+            return await task_b.send(x=2)
+
+        t1 = _asyncio.create_task(_first())
+        t2 = _asyncio.create_task(_second())
+
+        # Let both tasks start; first is in slow connect,
+        # second is queued on the lock.
+        await _asyncio.sleep(0.01)
+        proceed.set()
+
+        await _asyncio.gather(t1, t2)
+        # connect called exactly once (second hit inner skip).
+        assert broker.connect.call_count == 1
+
+
+# === TestSyncPlanqEager ===
+
+
+class TestSyncPlanqEager:
+    """Tests for SyncPlanq in eager mode."""
+
+    def test_sync_eager_no_background_thread(self) -> None:
+        broker = _make_broker()
+        app = SyncPlanq(broker, eager=True)
+        assert app._thread is None
+        assert app._loop is None
+
+    def test_sync_eager_send(self) -> None:
+        broker = _make_broker()
+        app = SyncPlanq(broker, eager=True)
+
+        called = False
+
+        @app.task(name="test.sync_eager")
+        def my_task(x: int) -> int:
+            nonlocal called
+            called = True
+            return x
+
+        result = my_task.send(x=42)
+        assert called
+        assert result == "eager"
+
+    def test_sync_eager_close_is_safe(self) -> None:
+        broker = _make_broker()
+        app = SyncPlanq(broker, eager=True)
+        app.close()  # should not raise

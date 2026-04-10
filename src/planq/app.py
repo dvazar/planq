@@ -144,13 +144,38 @@ class PlanqTask(Generic[P, T]):
     ) -> str:
         """Publish the request to the broker.
 
+        In eager mode, calls the handler directly and returns
+        ``"eager"`` without touching the broker.
+
         Args:
             request: The JSON-RPC request to publish.
             transport: Extracted transport options.
 
         Returns:
-            The broker-assigned message ID.
+            The broker-assigned message ID, or ``"eager"``.
         """
+        if self._app.eager:
+            if isinstance(request.params, dict):
+                args, kwargs = (), request.params
+            elif isinstance(request.params, list):
+                args, kwargs = tuple(request.params), {}
+            else:
+                args, kwargs = (), {}
+
+            if asyncio.iscoroutinefunction(self._func):
+                await self._func(*args, **kwargs)
+            else:
+                self._func(*args, **kwargs)
+            return "eager"
+
+        if not self._app._connected:
+            if self._app._connect_lock is None:
+                self._app._connect_lock = asyncio.Lock()
+            async with self._app._connect_lock:
+                if not self._app._connected:
+                    await self._app.broker.connect()
+                    self._app._connected = True
+
         return await self._app.broker.publish(
             self.queue_name,
             request,
@@ -221,14 +246,18 @@ class Planq:
         routes: Mapping of method name to TaskRoute.
     """
 
-    def __init__(self, broker: BaseBroker) -> None:
+    def __init__(self, broker: BaseBroker, *, eager: bool = False) -> None:
         """Initialize with a broker instance.
 
         Args:
             broker: Connected (or lazy) broker instance.
+            eager: When True, .send() calls handlers directly.
         """
         self.broker = broker
+        self.eager = eager
         self.routes: dict[str, TaskRoute] = {}
+        self._connected: bool = False
+        self._connect_lock: asyncio.Lock | None = None
 
     def _dispatch(
         self,
@@ -331,21 +360,29 @@ class SyncPlanq(Planq):
             resize_image.options(delay=5).send(url="...")
     """
 
-    def __init__(self, broker: BaseBroker) -> None:
+    def __init__(self, broker: BaseBroker, *, eager: bool = False) -> None:
         """Initialize and start the background event loop.
 
-        Args:
-            broker: Broker instance (connected eagerly).
-        """
-        super().__init__(broker)
+        In eager mode, skips creating the background loop and
+        thread -- handlers run directly in the calling thread.
 
-        self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(
-            target=self._run_background_loop,
-            daemon=True,
-        )
-        self._thread.start()
-        self._run_sync(self.broker.connect())
+        Args:
+            broker: Broker instance (connected eagerly unless eager).
+            eager: When True, skip background loop creation.
+        """
+        super().__init__(broker, eager=eager)
+
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        if not eager:
+            self._loop = asyncio.new_event_loop()
+            self._thread = threading.Thread(
+                target=self._run_background_loop,
+                daemon=True,
+            )
+            self._thread.start()
+            self._run_sync(self.broker.connect())
+            self._connected = True
 
     def _run_background_loop(self) -> None:
         """Run the event loop in the background thread."""
@@ -370,23 +407,29 @@ class SyncPlanq(Planq):
     ) -> str:  # type: ignore[override]
         """Dispatch a coroutine synchronously.
 
-        Submits the coroutine to the background event loop and
-        blocks until it completes.
+        In eager mode, uses ``asyncio.run()`` since there is no
+        background event loop.
 
         Args:
             coro: The coroutine to dispatch.
 
         Returns:
-            The broker-assigned message ID.
+            The broker-assigned message ID or ``"eager"``.
         """
+        if self.eager:
+            return asyncio.run(coro)
         return self._run_sync(coro)
 
     def close(self) -> None:
         """Disconnect the broker and stop the background loop."""
-        self._run_sync(self.broker.disconnect())
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join()
-        self._loop.close()
+        if self._loop is not None:
+            self._run_sync(self.broker.disconnect())
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._thread is not None:
+            self._thread.join()
+        if self._loop is not None:
+            self._loop.close()
+        self._connected = False
 
     def __enter__(self) -> SyncPlanq:
         """Enter context manager (already connected)."""

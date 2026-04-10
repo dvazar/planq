@@ -85,6 +85,7 @@ from planq.models import (
     TaskResult,
     TaskRoute,
 )
+from planq.providers.memory import InMemoryBroker, InMemoryMessage
 from planq.tracing import TraceContext, parse_traceparent_and_generate_span
 
 __all__ = [
@@ -101,6 +102,8 @@ __all__ = [
     "FeatureNotSupportedError",
     "HandlerTimeout",
     "Header",
+    "InMemoryBroker",
+    "InMemoryMessage",
     "InvalidParamsError",
     "JsonRpcError",
     "LogEvent",

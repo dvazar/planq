@@ -738,19 +738,41 @@ class PlanqConsumer:
         finally:
             sem.release()
 
-    async def run(self, queue: str) -> None:
-        """Start consuming messages from the given queue until shutdown.
-
-        Installs SIGINT/SIGTERM handlers that trigger a clean drain of
-        in-flight messages before exiting. Shuts down the process pool
-        (if any) after the event loop exits.
+    async def _consume_queue(
+        self,
+        queue: str,
+        sem: asyncio.Semaphore,
+        shutdown_event: asyncio.Event,
+        tg: asyncio.TaskGroup,
+    ) -> None:
+        """Consume messages from a single queue.
 
         Args:
-            queue: Source queue name or URL to consume from.
+            queue: Queue name to consume from.
+            sem: Shared semaphore for concurrency control.
+            shutdown_event: Event signaling graceful shutdown.
+            tg: TaskGroup for spawning message processors.
         """
-        shutdown_event = asyncio.Event()
-        loop = asyncio.get_running_loop()
+        async for msg in self.broker.consume(
+            queue, prefetch=self._settings.concurrency
+        ):
+            if shutdown_event.is_set():
+                break
+            await sem.acquire()
+            tg.create_task(self._guarded_process(msg, sem))
 
+    async def run(self, *queues: str) -> None:
+        """Consume from multiple queues concurrently.
+
+        Installs SIGINT/SIGTERM handlers that trigger a clean
+        drain of in-flight messages before exiting. Shuts down
+        the process pool (if any) after the event loop exits.
+
+        Args:
+            queues: Queue names to consume from.
+        """
+        loop = asyncio.get_running_loop()
+        shutdown_event = asyncio.Event()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, shutdown_event.set)
 
@@ -758,14 +780,10 @@ class PlanqConsumer:
             async with self.broker:
                 async with asyncio.TaskGroup() as tg:
                     sem = asyncio.Semaphore(self._settings.concurrency)
-                    async for msg in self.broker.consume(
-                        queue,
-                        prefetch=self._settings.concurrency,
-                    ):
-                        if shutdown_event.is_set():
-                            break
-                        await sem.acquire()
-                        tg.create_task(self._guarded_process(msg, sem))
+                    for queue in queues:
+                        tg.create_task(
+                            self._consume_queue(queue, sem, shutdown_event, tg)
+                        )
         finally:
             if self._pool is not None:
                 self._pool.shutdown(wait=True)
