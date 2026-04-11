@@ -14,7 +14,11 @@ from redis.exceptions import ResponseError
 from planq.enums import Header
 from planq.message import BrokerMessage
 from planq.models import JsonRpcRequest, JsonRpcResponse
-from planq.providers.redis import RedisBroker, RedisConsumerConfig
+from planq.providers.redis import (
+    _DELAYED_QUEUES_KEY,
+    RedisBroker,
+    RedisConsumerConfig,
+)
 
 
 async def consume_one(
@@ -58,8 +62,8 @@ async def redis_broker(redis_endpoint):
         consumer=RedisConsumerConfig(
             group_name="test-group",
             consumer_name="test-consumer",
+            scheduler_interval=0.5,
         ),
-        scheduler_interval=0.5,
     )
     await broker.connect()
     yield broker
@@ -86,6 +90,7 @@ async def cleanup_streams(redis_broker):
         "claim-stream:delayed",
         "recovery-stream",
         "recovery-stream:delayed",
+        _DELAYED_QUEUES_KEY,
     ]
     for key in streams:
         try:
@@ -388,6 +393,7 @@ async def test_scheduler_migrates_delayed_messages(redis_broker):
     rpc = JsonRpcRequest(method="migrated.task", id="mig-123")
     payload = json.dumps(
         {
+            "v": "1",
             "body": rpc.model_dump_json(),
             "reply_to": "",
             "expire_at": "",
@@ -398,7 +404,9 @@ async def test_scheduler_migrates_delayed_messages(redis_broker):
     )
     # Score in the past so it's immediately eligible
     await redis_broker._client.zadd(delayed_key, {payload: time.time() - 10})
-    redis_broker._delayed_queues.add("test-stream")
+    await redis_broker._client.zadd(
+        _DELAYED_QUEUES_KEY, {"test-stream": time.time()}
+    )
 
     # Wait for scheduler to pick it up
     await asyncio.sleep(1.5)
@@ -470,7 +478,8 @@ async def test_reject_removes_message(redis_broker):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_poison_message_hook_failure_logged(redis_broker):
-    """When on_poison_message hook raises, error is logged."""
+    """When on_poison_message hook raises, error is logged and XACK is
+    skipped so the entry stays in PEL for the next recovery pass."""
     original_hook = redis_broker.on_poison_message
     redis_broker.on_poison_message = AsyncMock(
         side_effect=RuntimeError("Hook failed")
@@ -485,6 +494,13 @@ async def test_poison_message_hook_failure_logged(redis_broker):
         messages = await consume_all(redis_broker, "test-stream", timeout=1.0)
         assert len(messages) == 0
         redis_broker.on_poison_message.assert_called_once()
+
+        # Hook failed → entry must remain in the consumer group PEL so
+        # a future recovery pass can re-process it.
+        pending = await redis_broker._client.xpending(
+            "test-stream", "test-group"
+        )
+        assert pending["pending"] >= 1
     finally:
         redis_broker.on_poison_message = original_hook
 
@@ -546,12 +562,14 @@ async def test_scheduler_logs_warning_on_migration_failure(
         consumer=RedisConsumerConfig(
             group_name="sched-fail-group",
             consumer_name="sched-fail-consumer",
+            scheduler_interval=0.3,
         ),
-        scheduler_interval=0.3,
     )
     await broker.connect()
     try:
-        broker._delayed_queues.add("test-stream")
+        await broker._client.zadd(
+            _DELAYED_QUEUES_KEY, {"test-stream": time.time()}
+        )
         broker._migrate_script = AsyncMock(
             side_effect=RuntimeError("Script error")
         )
@@ -561,6 +579,7 @@ async def test_scheduler_logs_warning_on_migration_failure(
 
         broker._migrate_script.assert_called()
     finally:
+        await broker._client.zrem(_DELAYED_QUEUES_KEY, "test-stream")
         await broker.disconnect()
 
 
@@ -841,8 +860,8 @@ async def test_scheduler_migrates_multiple_queues_concurrently(
         consumer=RedisConsumerConfig(
             group_name="sched-multi-group",
             consumer_name="sched-multi-consumer",
+            scheduler_interval=0.5,
         ),
-        scheduler_interval=0.5,
     )
     await broker.connect()
     try:
@@ -853,6 +872,7 @@ async def test_scheduler_migrates_multiple_queues_concurrently(
             rpc = JsonRpcRequest(method=f"task.{q}", id=f"id-{q}")
             payload = json.dumps(
                 {
+                    "v": "1",
                     "body": rpc.model_dump_json(),
                     "reply_to": "",
                     "expire_at": "",
@@ -862,7 +882,7 @@ async def test_scheduler_migrates_multiple_queues_concurrently(
                 }
             )
             await broker._client.zadd(delayed_key, {payload: time.time() - 10})
-            broker._delayed_queues.add(q)
+            await broker._client.zadd(_DELAYED_QUEUES_KEY, {q: time.time()})
 
         # Wait for scheduler to migrate all
         await asyncio.sleep(1.5)
@@ -874,6 +894,7 @@ async def test_scheduler_migrates_multiple_queues_concurrently(
         for q in ["sched-q1", "sched-q2", "sched-q3"]:
             await broker._client.delete(q)
             await broker._client.delete(f"{q}:delayed")
+            await broker._client.zrem(_DELAYED_QUEUES_KEY, q)
         await broker.disconnect()
 
 
@@ -886,12 +907,14 @@ async def test_migrate_loops_on_full_batch(redis_endpoint):
         consumer=RedisConsumerConfig(
             group_name="migrate-loop-group",
             consumer_name="migrate-loop-consumer",
+            scheduler_interval=0.3,
         ),
-        scheduler_interval=0.3,
     )
     await broker.connect()
     try:
-        broker._delayed_queues.add("test-stream")
+        await broker._client.zadd(
+            _DELAYED_QUEUES_KEY, {"test-stream": time.time()}
+        )
         broker._migrate_script = AsyncMock(
             side_effect=[100, 0, 0, 0, 0],
         )
@@ -900,6 +923,7 @@ async def test_migrate_loops_on_full_batch(redis_endpoint):
 
         assert broker._migrate_script.call_count >= 2
     finally:
+        await broker._client.zrem(_DELAYED_QUEUES_KEY, "test-stream")
         await broker.disconnect()
 
 
@@ -948,6 +972,61 @@ async def test_pel_recovery_on_startup(redis_endpoint):
         msg_b = await consume_one(broker_b, queue, timeout=2.0)
         assert msg_b is not None
         assert msg_b.body.method == "recovery.task"
+        await msg_b.ack()
+    finally:
+        await broker_b.disconnect()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_pel_recovery_increments_delivery_count(redis_endpoint):
+    """PEL-redelivered message reports delivery_count >= 2.
+
+    The stream-entry delivery_count field is frozen at 1 (unchanged
+    between the original XREADGROUP and the second one), but Redis's
+    PEL times_delivered counter is now 2. The RedisMessage must sum
+    them via the stream_field + (NEL - 1) formula so that
+    PlanqConsumer's max-retries gate can see crash-driven
+    redeliveries.
+    """
+    queue = "pel-delivery-count-stream"
+    broker_a = RedisBroker(
+        dsn=redis_endpoint,
+        consumer=RedisConsumerConfig(
+            group_name="pel-dc-group",
+            consumer_name="pel-dc-consumer",
+            claim_idle_ms=0,
+        ),
+    )
+    await broker_a.connect()
+    try:
+        request = JsonRpcRequest(method="pel.dc.task", id="pdc-1")
+        await broker_a.publish(queue, request)
+
+        msg_a = await consume_one(broker_a, queue)
+        assert msg_a is not None
+        # First delivery: stream_field=1, NEL=1 → delivery_count=1
+        assert msg_a.delivery_count == 1
+        # Intentionally do NOT ack — leave in PEL
+    finally:
+        await broker_a.disconnect()
+
+    broker_b = RedisBroker(
+        dsn=redis_endpoint,
+        consumer=RedisConsumerConfig(
+            group_name="pel-dc-group",
+            consumer_name="pel-dc-consumer",
+            claim_idle_ms=0,
+        ),
+    )
+    await broker_b.connect()
+    try:
+        msg_b = await consume_one(broker_b, queue, timeout=2.0)
+        assert msg_b is not None
+        assert msg_b.body.method == "pel.dc.task"
+        # Second delivery via PEL recovery: stream_field=1, NEL=2
+        # → delivery_count = 1 + (2 - 1) = 2
+        assert msg_b.delivery_count == 2
         await msg_b.ack()
     finally:
         await broker_b.disconnect()
@@ -1010,8 +1089,8 @@ async def test_lua_pcall_skips_corrupt_entry(redis_endpoint):
         consumer=RedisConsumerConfig(
             group_name="pcall-group",
             consumer_name="pcall-consumer",
+            scheduler_interval=0.5,
         ),
-        scheduler_interval=0.5,
     )
     await broker.connect()
     try:
@@ -1019,6 +1098,7 @@ async def test_lua_pcall_skips_corrupt_entry(redis_endpoint):
         rpc = JsonRpcRequest(method="valid.lua", id="lua-1")
         valid_payload = json.dumps(
             {
+                "v": "1",
                 "body": rpc.model_dump_json(),
                 "reply_to": "",
                 "expire_at": "",
@@ -1033,7 +1113,7 @@ async def test_lua_pcall_skips_corrupt_entry(redis_endpoint):
         # Add a corrupt (non-JSON) entry
         await broker._client.zadd(delayed_key, {"not valid json {{{": now - 10})
 
-        broker._delayed_queues.add(queue)
+        await broker._client.zadd(_DELAYED_QUEUES_KEY, {queue: time.time()})
 
         # Wait for scheduler to migrate
         await asyncio.sleep(1.5)
@@ -1049,6 +1129,59 @@ async def test_lua_pcall_skips_corrupt_entry(redis_endpoint):
         await msg.ack()
     finally:
         await broker.disconnect()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_delayed_queue_registered_cross_process(redis_endpoint):
+    """Delayed messages published by a producer-only broker get migrated
+    by a consumer running in a separate process that never directly
+    touched the target queue — this is the ``_delayed_queues`` registry
+    ZSET fix for the orphan-delayed-messages bug."""
+    producer_queue = "cross-process-queue"
+    consumer_queue = "unrelated-queue"
+
+    producer_broker = RedisBroker(dsn=redis_endpoint)
+    await producer_broker.connect()
+    try:
+        # Producer publishes with a short delay so the scheduler
+        # tick will migrate it quickly.
+        rpc = JsonRpcRequest(method="cross.process", id="cp-1")
+        delayed_id = await producer_broker.publish(
+            producer_queue, rpc, delay=0.1
+        )
+        assert delayed_id is not None
+    finally:
+        await producer_broker.disconnect()
+
+    consumer_broker = RedisBroker(
+        dsn=redis_endpoint,
+        consumer=RedisConsumerConfig(
+            group_name="cross-process-group",
+            consumer_name="cross-process-consumer",
+            scheduler_interval=0.2,
+        ),
+    )
+    await consumer_broker.connect()
+    try:
+        # Consumer never directly consumes from producer_queue; the
+        # scheduler must discover it via the registry ZSET.
+        msg = await consume_one(consumer_broker, consumer_queue, timeout=0.3)
+        assert msg is None
+
+        # Wait for scheduler migration to complete.
+        await asyncio.sleep(1.0)
+
+        stream_len = await consumer_broker._client.xlen(producer_queue)
+        assert stream_len >= 1, (
+            "Delayed message not migrated — registry ZSET is not"
+            " being consulted by the scheduler"
+        )
+    finally:
+        await consumer_broker._client.delete(producer_queue)
+        await consumer_broker._client.delete(f"{producer_queue}:delayed")
+        await consumer_broker._client.zrem(_DELAYED_QUEUES_KEY, producer_queue)
+        await consumer_broker.disconnect()
 
 
 # -- ConnectionError propagation test --

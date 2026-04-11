@@ -37,8 +37,8 @@ async def redis_broker(redis_endpoint):
         consumer=RedisConsumerConfig(
             group_name="consumer-test-group",
             consumer_name="consumer-test-consumer",
+            scheduler_interval=0.5,
         ),
-        scheduler_interval=0.5,
     )
     await broker.connect()
     yield broker
