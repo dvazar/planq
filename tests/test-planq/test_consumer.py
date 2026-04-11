@@ -2544,8 +2544,9 @@ class TestSignalHandlingAndShutdown:
         await asyncio.wait_for(handler_started.wait(), timeout=2.0)
 
         # Now the handler is genuinely in-flight. Signal shutdown.
+        # stop() alone must suffice: it races the blocked
+        # broker.consume() poll and cancels it so run() can exit.
         await consumer.stop()
-        await app.broker.disconnect()
 
         # Release the blocked handler. It must still complete
         # before run_task returns -- that's the drain guarantee.
@@ -2553,6 +2554,64 @@ class TestSignalHandlingAndShutdown:
         await asyncio.wait_for(run_task, timeout=2.0)
 
         assert processed == [42]
+
+    @pytest.mark.asyncio
+    async def test_run_cancellation_cleans_up_pending_anext(self):
+        """Cancelling run() from outside reaps the pending __anext__ task.
+
+        Guards against a task leak where ``_consume_queue`` is
+        suspended in ``asyncio.wait`` on an idle broker and its
+        host task is cancelled (e.g., the uvicorn process is
+        shutting down via a different path than ``stop()``). The
+        pending ``consume_gen.__anext__()`` task must be cancelled
+        and awaited so it does not trigger a "Task was destroyed
+        but it is pending!" warning.
+        """
+        from planq.providers.memory import InMemoryBroker
+
+        app = Planq(broker=InMemoryBroker())
+        consumer = PlanqConsumer(
+            app,
+            middlewares=[],
+            install_signal_handlers=False,
+        )
+
+        run_task = asyncio.create_task(consumer.run("q"))
+        # Let run() enter the broker context and suspend inside
+        # _consume_queue's asyncio.wait on the idle queue.
+        await asyncio.sleep(0.05)
+
+        run_task.cancel()
+        with pytest.raises((asyncio.CancelledError, BaseExceptionGroup)):
+            await run_task
+
+    @pytest.mark.asyncio
+    async def test_stop_unblocks_idle_broker(self):
+        """stop() interrupts a consume() call blocked on an empty queue.
+
+        Regression test for the case where the broker is idle and
+        ``broker.consume()`` is suspended on its underlying poll
+        (e.g., XREADGROUP, SQS long-poll, ``asyncio.Queue.get()``).
+        Without the fix, ``run()`` would hang until a message arrives
+        or the broker disconnected, blowing past uvicorn's shutdown
+        grace period.
+        """
+        from planq.providers.memory import InMemoryBroker
+
+        app = Planq(broker=InMemoryBroker())
+        consumer = PlanqConsumer(
+            app,
+            middlewares=[],
+            install_signal_handlers=False,
+        )
+
+        run_task = asyncio.create_task(consumer.run("q"))
+        # Let run() enter the broker context and suspend on
+        # the empty InMemoryBroker queue.
+        await asyncio.sleep(0.05)
+
+        await consumer.stop()
+        await asyncio.wait_for(run_task, timeout=1.0)
 
     @pytest.mark.asyncio
     async def test_install_signal_handlers_false_skips_signal_setup(self):

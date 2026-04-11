@@ -77,20 +77,14 @@ in-flight messages. Then `docker compose down`.
 
 ## Shutdown timing
 
-`consumer.stop()` signals the consumer loop but does not
-forcibly unblock a currently-blocked `broker.consume()` call.
-The actual exit happens when:
-
-- A new message arrives and the shutdown check fires before
-  the message is handed to a handler, or
-- The broker's current poll cycle returns.
-
-For Redis, `XREADGROUP` has a configurable block timeout; for
-SQS, long-polling blocks up to 20 seconds. Under load (messages
-flowing), shutdown latency is sub-second. On a completely idle
-consumer, it is bounded by the broker poll interval. Uvicorn
-gives applications a shutdown grace period that covers this
-window.
+`consumer.stop()` races the broker's next poll against the
+shutdown event and cancels the pending poll as soon as the
+event fires, so shutdown is prompt regardless of whether the
+consumer is idle or under load — no waiting on `XREADGROUP`
+block timeouts or SQS long-poll windows. In-flight handlers
+still drain to completion before `run()` returns; cancellation
+only interrupts the broker poll, not the `TaskGroup` running
+handlers.
 
 ## When to use this pattern
 

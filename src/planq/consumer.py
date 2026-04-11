@@ -319,18 +319,17 @@ class PlanqConsumer:
 
         Safe to call from another coroutine (e.g., an ASGI
         ``lifespan.shutdown`` handler). Sets the internal
-        shutdown event, which causes the
-        ``async for msg in broker.consume(...)`` loop in each
-        queue consumer to break at the next iteration. In-flight
-        messages are drained by the ``asyncio.TaskGroup`` in
-        :meth:`run` before it returns.
+        shutdown event; each per-queue consumer races its next
+        ``broker.consume()`` poll against this event and returns
+        as soon as shutdown fires, even on an idle broker whose
+        poll would otherwise block indefinitely (XREADGROUP, SQS
+        long-poll, ``asyncio.Queue.get()``). In-flight messages
+        are drained by the ``asyncio.TaskGroup`` in :meth:`run`
+        before it returns.
 
         Idempotent: safe to call before :meth:`run` starts (in
-        which case ``run()`` exits on the first message fetch),
-        after :meth:`run` completes, or multiple times. Does not
-        forcibly unblock a currently-blocked ``broker.consume()``
-        call; on an idle broker, shutdown latency is bounded by
-        the broker's poll interval.
+        which case ``run()`` exits on the first fetch), after
+        :meth:`run` completes, or multiple times.
         """
         self._shutdown_event.set()
 
@@ -776,7 +775,13 @@ class PlanqConsumer:
         shutdown_event: asyncio.Event,
         tg: asyncio.TaskGroup,
     ) -> None:
-        """Consume messages from a single queue.
+        """Consume messages from a single queue until shutdown.
+
+        Races each ``broker.consume().__anext__()`` call against
+        ``shutdown_event.wait()`` via
+        :func:`asyncio.wait` so a ``stop()`` call can interrupt a
+        poll blocked inside the broker (XREADGROUP, SQS long-poll,
+        ``asyncio.Queue.get()``) without waiting for its timeout.
 
         Args:
             queue: Queue name to consume from.
@@ -784,13 +789,58 @@ class PlanqConsumer:
             shutdown_event: Event signaling graceful shutdown.
             tg: TaskGroup for spawning message processors.
         """
-        async for msg in self.broker.consume(
+        consume_gen = self.broker.consume(
             queue, prefetch=self._settings.concurrency
-        ):
-            if shutdown_event.is_set():
-                break
-            await sem.acquire()
-            tg.create_task(self._guarded_process(msg, sem))
+        )
+        shutdown_wait = asyncio.ensure_future(shutdown_event.wait())
+        try:
+            while True:
+                next_msg = asyncio.ensure_future(consume_gen.__anext__())
+                try:
+                    await asyncio.wait(
+                        (next_msg, shutdown_wait),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                except BaseException:
+                    next_msg.cancel()
+                    raise
+
+                if not next_msg.done():
+                    # Shutdown won the race: cancel the suspended
+                    # poll and exit the loop. The generator's
+                    # finally blocks run via aclose() below.
+                    next_msg.cancel()
+                    try:
+                        await next_msg
+                    except (
+                        asyncio.CancelledError,
+                        StopAsyncIteration,
+                    ):
+                        pass
+                    return
+
+                try:
+                    msg = next_msg.result()
+                except StopAsyncIteration:
+                    return
+
+                if shutdown_event.is_set():
+                    # Shutdown landed between message arrival and
+                    # dispatch. Return the message to the broker
+                    # so another worker picks it up.
+                    await msg.nack(0)
+                    return
+
+                await sem.acquire()
+                tg.create_task(self._guarded_process(msg, sem))
+        finally:
+            if not shutdown_wait.done():
+                shutdown_wait.cancel()
+                try:
+                    await shutdown_wait
+                except asyncio.CancelledError:
+                    pass
+            await consume_gen.aclose()
 
     async def run(self, *queues: str) -> None:
         """Consume from multiple queues concurrently.
