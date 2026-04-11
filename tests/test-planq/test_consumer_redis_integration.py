@@ -20,7 +20,7 @@ from planq.models import (
     JsonRpcResponse,
     TaskResult,
 )
-from planq.providers.redis import RedisBroker
+from planq.providers.redis import RedisBroker, RedisConsumerConfig
 
 
 @pytest.fixture(scope="module")
@@ -34,8 +34,10 @@ async def redis_broker(redis_endpoint):
     """Connected RedisBroker instance."""
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="consumer-test-group",
-        consumer_name="consumer-test-consumer",
+        consumer=RedisConsumerConfig(
+            group_name="consumer-test-group",
+            consumer_name="consumer-test-consumer",
+        ),
         scheduler_interval=0.5,
     )
     await broker.connect()

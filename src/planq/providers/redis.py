@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from typing import TYPE_CHECKING, Final, override
 from uuid import uuid4
 
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationInfo,
+    field_validator,
+)
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, ResponseError, TimeoutError
 
@@ -19,11 +26,12 @@ from planq.enums import Header, LogEvent
 from planq.log import get_planq_logger
 from planq.message import BrokerMessage
 from planq.models import JsonRpcRequest, JsonRpcResponse
+from planq.types import Seconds
 
 if TYPE_CHECKING:
     from redis.commands.core import AsyncScript
 
-    from planq.types import Headers, Seconds
+    from planq.types import Headers
 
 _MIGRATE_BATCH_SIZE: Final[int] = 100
 """Max messages migrated per scheduler Lua script run."""
@@ -42,12 +50,6 @@ _DELAYED_SUFFIX: Final[str] = ":delayed"
 
 _DEFAULT_MAX_STREAM_LEN: Final[int] = 100_000
 """Approximate cap for XADD MAXLEN ~ to prevent OOM."""
-
-_DEFAULT_CLAIM_IDLE_MS: Final[int] = 300_000
-"""XAUTOCLAIM min idle time in ms (5 minutes)."""
-
-_DEFAULT_CLAIM_INTERVAL: Final[Seconds] = 60.0
-"""Seconds between XAUTOCLAIM checks in consume loop."""
 
 _DEFAULT_SOCKET_TIMEOUT: Final[Seconds] = 5.0
 """TCP socket timeout in seconds."""
@@ -245,6 +247,66 @@ class RedisMessage(BrokerMessage):
             await pipe.execute()
 
 
+class RedisConsumerConfig(BaseModel):
+    """Consumer-only configuration for :class:`RedisBroker`.
+
+    Holds Redis Streams parameters that are meaningful only on the
+    consumer side: consumer group membership and XAUTOCLAIM tuning.
+    Producer-only instances of :class:`RedisBroker` omit this object
+    entirely.
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    # Redis Streams consumer group name (XREADGROUP / XGROUP CREATE).
+    group_name: str
+
+    # Unique consumer name within the group. Use a stable identifier
+    # (hostname, pod name) so PEL recovery bypasses XAUTOCLAIM on
+    # restart.
+    consumer_name: str
+
+    # XAUTOCLAIM min idle time in milliseconds. ``0`` disables claiming.
+    claim_idle_ms: int = 300_000
+
+    # Seconds between XAUTOCLAIM passes in the consume loop.
+    claim_interval: Seconds = 60.0
+
+    @field_validator("group_name", "consumer_name")
+    @classmethod
+    def validate_non_empty(cls, v: str, info: ValidationInfo) -> str:
+        """Reject empty or whitespace-only identifiers."""
+        if not v.strip():
+            raise ValueError(f"{info.field_name} must not be empty")
+        return v
+
+    @field_validator("claim_idle_ms")
+    @classmethod
+    def validate_claim_idle_ms(cls, v: int) -> int:
+        """Ensure claim_idle_ms is non-negative; ``0`` disables claiming."""
+        if v < 0:
+            raise ValueError(
+                "claim_idle_ms must be non-negative (0 disables claiming)"
+            )
+        return v
+
+    @field_validator("claim_interval")
+    @classmethod
+    def validate_claim_interval(cls, v: float) -> float:
+        """Ensure claim_interval is a finite non-negative number.
+
+        ``0`` is allowed and means "claim on every iteration" (no
+        throttling between XAUTOCLAIM passes).
+        """
+        if math.isnan(v):
+            raise ValueError("claim_interval cannot be NaN")
+        if math.isinf(v):
+            raise ValueError("claim_interval cannot be infinite")
+        if v < 0:
+            raise ValueError("claim_interval must be non-negative")
+        return v
+
+
 class RedisBroker(BaseBroker):
     """Redis Streams broker with ZSET-based delayed message scheduling.
 
@@ -253,8 +315,29 @@ class RedisBroker(BaseBroker):
     scheduler atomically migrates ready messages from ZSETs to streams
     using a Lua script.
 
+    The broker is usable from both producer and consumer processes. A
+    producer-only instance omits the ``consumer`` argument; the delayed
+    message scheduler only runs when ``consumer`` is provided, so
+    producers incur no extra background task.
+
     Note:
-        Requires Redis Server 6.2 or higher for delayed messages migration.
+        Requires Redis Server 6.2 or higher for delayed messages
+        migration.
+
+    Example:
+        Producer (no consumer config)::
+
+            broker = RedisBroker(dsn="redis://localhost:6379")
+
+        Consumer::
+
+            broker = RedisBroker(
+                dsn="redis://localhost:6379",
+                consumer=RedisConsumerConfig(
+                    group_name="workers",
+                    consumer_name=socket.gethostname(),
+                ),
+            )
 
     Attributes:
         dsn: Redis connection URL (e.g. ``redis://localhost:6379``).
@@ -264,50 +347,37 @@ class RedisBroker(BaseBroker):
         self,
         dsn: str,
         *,
-        group_name: str,
-        consumer_name: str,
+        consumer: RedisConsumerConfig | None = None,
         max_connections: int = _DEFAULT_MAX_CONNECTIONS,
         scheduler_interval: Seconds = _DEFAULT_SCHEDULER_INTERVAL,
         max_stream_len: int | None = _DEFAULT_MAX_STREAM_LEN,
-        claim_idle_ms: int = _DEFAULT_CLAIM_IDLE_MS,
-        claim_interval: Seconds = _DEFAULT_CLAIM_INTERVAL,
         socket_timeout: Seconds = _DEFAULT_SOCKET_TIMEOUT,
-        health_check_interval: int = _DEFAULT_HEALTH_CHECK_INTERVAL,
+        health_check_interval: Seconds = _DEFAULT_HEALTH_CHECK_INTERVAL,
         retry_on_timeout: bool = True,
     ) -> None:
         """Initialize the Redis broker.
 
         Args:
             dsn: Redis connection URL passed to ``Redis.from_url()``.
-            group_name: Consumer group name for XREADGROUP.
-            consumer_name: Unique consumer name within the consumer group.
-                It is highly recommended to use a deterministic and stable
-                identifier (e.g., `socket.gethostname()`, a Kubernetes Pod
-                name, or a fixed string) rather than a random UUID.
-                A stable name allows the broker to instantly recover and
-                resume processing its own pending messages (PEL) upon
-                restart, bypassing the slow `XAUTOCLAIM` timeout.
+            consumer: Consumer-side configuration (group name, consumer
+                name, XAUTOCLAIM tuning). Required when the broker is
+                used to ``consume()`` messages; omit for producer-only
+                instances.
             max_connections: Maximum Redis connections in the pool.
             scheduler_interval: Seconds between delayed-queue scheduler
                 polls. Defaults to ``_DEFAULT_SCHEDULER_INTERVAL``.
             max_stream_len: Approximate MAXLEN cap for XADD.
                 ``None`` disables the cap.
-            claim_idle_ms: XAUTOCLAIM minimum idle time in
-                milliseconds. ``0`` disables claiming.
-            claim_interval: Seconds between XAUTOCLAIM checks.
             socket_timeout: TCP socket timeout in seconds.
             health_check_interval: Seconds between connection
                 health checks.
             retry_on_timeout: Retry commands on timeout errors.
         """
         super().__init__(dsn)
-        self._group_name = group_name
-        self._consumer_name = consumer_name
+        self._consumer = consumer
         self._max_connections = max_connections
         self._scheduler_interval = scheduler_interval
         self._max_stream_len = max_stream_len
-        self._claim_idle_ms = claim_idle_ms
-        self._claim_interval = claim_interval
         self._socket_timeout = socket_timeout
         self._health_check_interval = health_check_interval
         self._retry_on_timeout = retry_on_timeout
@@ -318,7 +388,13 @@ class RedisBroker(BaseBroker):
 
     @override
     async def connect(self) -> None:
-        """Create a Redis client and start the scheduler task."""
+        """Create a Redis client and start the scheduler task.
+
+        The delayed-message scheduler runs only when a
+        ``RedisConsumerConfig`` was provided. Producer-only instances
+        skip it entirely and rely on some other consumer-equipped
+        process to migrate delayed messages.
+        """
         self._client = Redis.from_url(
             self.dsn,
             decode_responses=True,
@@ -328,7 +404,8 @@ class RedisBroker(BaseBroker):
             max_connections=self._max_connections,
         )
         self._migrate_script = self._client.register_script(MIGRATE_LUA)
-        self._scheduler_task = asyncio.create_task(self._run_scheduler())
+        if self._consumer is not None:
+            self._scheduler_task = asyncio.create_task(self._run_scheduler())
 
     @override
     async def disconnect(self) -> None:
@@ -431,14 +508,24 @@ class RedisBroker(BaseBroker):
 
         Yields:
             :class:`RedisMessage` instances ready for processing.
+
+        Raises:
+            RuntimeError: If the broker was constructed without a
+                ``consumer`` config (producer-only instance).
         """
         assert self._client is not None
+        if self._consumer is None:
+            raise RuntimeError(
+                "RedisBroker.consume() requires a RedisConsumerConfig; "
+                "pass consumer=... to the RedisBroker constructor."
+            )
+        consumer_cfg = self._consumer
 
         queue_name = self.get_queue_name(queue)
 
         try:
             await self._client.xgroup_create(
-                queue, self._group_name, "0", mkstream=True
+                queue, consumer_cfg.group_name, "0", mkstream=True
             )
         except ResponseError as exc:
             if "BUSYGROUP" not in str(exc):
@@ -451,8 +538,8 @@ class RedisBroker(BaseBroker):
             last_id = "0-0"
             while True:
                 recovery_entries = await self._client.xreadgroup(
-                    self._group_name,
-                    self._consumer_name,
+                    consumer_cfg.group_name,
+                    consumer_cfg.consumer_name,
                     {queue: last_id},
                     count=prefetch,
                     block=None,
@@ -489,15 +576,15 @@ class RedisBroker(BaseBroker):
             has_more_to_claim = False
 
             if (
-                self._claim_idle_ms > 0
-                and now_mono - last_claim_at >= self._claim_interval
+                consumer_cfg.claim_idle_ms > 0
+                and now_mono - last_claim_at >= consumer_cfg.claim_interval
             ):
                 try:
                     result = await self._client.xautoclaim(
                         queue,
-                        self._group_name,
-                        self._consumer_name,
-                        min_idle_time=self._claim_idle_ms,
+                        consumer_cfg.group_name,
+                        consumer_cfg.consumer_name,
+                        min_idle_time=consumer_cfg.claim_idle_ms,
                         start_id=claim_start_id,
                         count=prefetch,
                     )
@@ -530,8 +617,8 @@ class RedisBroker(BaseBroker):
             current_block = None if has_more_to_claim else block_ms
             try:
                 entries = await self._client.xreadgroup(
-                    self._group_name,
-                    self._consumer_name,
+                    consumer_cfg.group_name,
+                    consumer_cfg.consumer_name,
                     {queue: ">"},
                     count=prefetch,
                     block=current_block,
@@ -603,6 +690,10 @@ class RedisBroker(BaseBroker):
             A :class:`RedisMessage` or ``None`` for poison messages.
         """
         assert self._client is not None
+        # Invariant: only reached from consume(), which has already
+        # verified self._consumer is not None.
+        assert self._consumer is not None
+        group_name = self._consumer.group_name
 
         raw_body = fields.get("body", "")
 
@@ -626,7 +717,7 @@ class RedisBroker(BaseBroker):
                 )
             finally:
                 with suppress(Exception):
-                    await self._client.xack(queue, self._group_name, entry_id)
+                    await self._client.xack(queue, group_name, entry_id)
             return None
 
         msg_headers: Headers = {}
@@ -650,7 +741,7 @@ class RedisBroker(BaseBroker):
             queue_name=queue_name,
             redis_client=self._client,
             stream_key=queue,
-            group_name=self._group_name,
+            group_name=group_name,
             entry_id=entry_id,
         )
 

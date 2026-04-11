@@ -14,7 +14,7 @@ from redis.exceptions import ResponseError
 from planq.enums import Header
 from planq.message import BrokerMessage
 from planq.models import JsonRpcRequest, JsonRpcResponse
-from planq.providers.redis import RedisBroker
+from planq.providers.redis import RedisBroker, RedisConsumerConfig
 
 
 async def consume_one(
@@ -55,8 +55,10 @@ async def redis_broker(redis_endpoint):
     """Connected RedisBroker instance."""
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="test-group",
-        consumer_name="test-consumer",
+        consumer=RedisConsumerConfig(
+            group_name="test-group",
+            consumer_name="test-consumer",
+        ),
         scheduler_interval=0.5,
     )
     await broker.connect()
@@ -274,8 +276,10 @@ async def test_broker_lifecycle(redis_endpoint):
     """Connect/disconnect state transitions."""
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="lifecycle-group",
-        consumer_name="lifecycle-consumer",
+        consumer=RedisConsumerConfig(
+            group_name="lifecycle-group",
+            consumer_name="lifecycle-consumer",
+        ),
     )
     assert broker._client is None
 
@@ -292,8 +296,10 @@ async def test_disconnect_when_not_connected(redis_endpoint):
     """Idempotent disconnect."""
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="disc-group",
-        consumer_name="disc-consumer",
+        consumer=RedisConsumerConfig(
+            group_name="disc-group",
+            consumer_name="disc-consumer",
+        ),
     )
     assert broker._client is None
     await broker.disconnect()  # Should not raise
@@ -306,8 +312,10 @@ async def test_double_disconnect_is_safe(redis_endpoint):
     """Repeated disconnect calls."""
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="double-group",
-        consumer_name="double-consumer",
+        consumer=RedisConsumerConfig(
+            group_name="double-group",
+            consumer_name="double-consumer",
+        ),
     )
     await broker.connect()
     await broker.disconnect()
@@ -510,8 +518,10 @@ async def test_xgroup_create_non_busygroup_error(redis_endpoint):
     """Non-BUSYGROUP ResponseError from XGROUP CREATE is re-raised."""
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="err-group",
-        consumer_name="err-consumer",
+        consumer=RedisConsumerConfig(
+            group_name="err-group",
+            consumer_name="err-consumer",
+        ),
     )
     await broker.connect()
     try:
@@ -533,8 +543,10 @@ async def test_scheduler_logs_warning_on_migration_failure(
     """Scheduler logs warning when migration script fails."""
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="sched-fail-group",
-        consumer_name="sched-fail-consumer",
+        consumer=RedisConsumerConfig(
+            group_name="sched-fail-group",
+            consumer_name="sched-fail-consumer",
+        ),
         scheduler_interval=0.3,
     )
     await broker.connect()
@@ -579,9 +591,11 @@ async def test_xautoclaim_recovers_stuck_message(redis_endpoint):
     # Consumer A reads a message but does NOT ack it
     broker_a = RedisBroker(
         dsn=redis_endpoint,
-        group_name="claim-group",
-        consumer_name="consumer-a",
-        claim_idle_ms=0,
+        consumer=RedisConsumerConfig(
+            group_name="claim-group",
+            consumer_name="consumer-a",
+            claim_idle_ms=0,
+        ),
     )
     await broker_a.connect()
     try:
@@ -598,10 +612,12 @@ async def test_xautoclaim_recovers_stuck_message(redis_endpoint):
     # Consumer B claims the stuck message (min_idle_time=1ms)
     broker_b = RedisBroker(
         dsn=redis_endpoint,
-        group_name="claim-group",
-        consumer_name="consumer-b",
-        claim_idle_ms=1,
-        claim_interval=0,
+        consumer=RedisConsumerConfig(
+            group_name="claim-group",
+            consumer_name="consumer-b",
+            claim_idle_ms=1,
+            claim_interval=0,
+        ),
     )
     await broker_b.connect()
     try:
@@ -621,9 +637,11 @@ async def test_xautoclaim_disabled_when_idle_ms_zero(
     """XAUTOCLAIM is skipped when claim_idle_ms=0."""
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="no-claim-group",
-        consumer_name="no-claim-consumer",
-        claim_idle_ms=0,
+        consumer=RedisConsumerConfig(
+            group_name="no-claim-group",
+            consumer_name="no-claim-consumer",
+            claim_idle_ms=0,
+        ),
     )
     await broker.connect()
     try:
@@ -648,10 +666,12 @@ async def test_xautoclaim_exception_logged_and_skipped(redis_endpoint):
     queue = "claim-stream"
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="claim-exc-group",
-        consumer_name="claim-exc-consumer",
-        claim_idle_ms=1,
-        claim_interval=0,
+        consumer=RedisConsumerConfig(
+            group_name="claim-exc-group",
+            consumer_name="claim-exc-consumer",
+            claim_idle_ms=1,
+            claim_interval=0,
+        ),
     )
     await broker.connect()
     try:
@@ -677,10 +697,12 @@ async def test_xautoclaim_poison_message_skipped(redis_endpoint):
     queue = "claim-stream"
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="claim-poison-group",
-        consumer_name="claim-poison-consumer",
-        claim_idle_ms=1,
-        claim_interval=0,
+        consumer=RedisConsumerConfig(
+            group_name="claim-poison-group",
+            consumer_name="claim-poison-consumer",
+            claim_idle_ms=1,
+            claim_interval=0,
+        ),
     )
     await broker.connect()
     try:
@@ -719,8 +741,10 @@ async def test_publish_with_maxlen_caps_stream(redis_endpoint):
     """MAXLEN ~ caps stream length approximately."""
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="maxlen-group",
-        consumer_name="maxlen-consumer",
+        consumer=RedisConsumerConfig(
+            group_name="maxlen-group",
+            consumer_name="maxlen-consumer",
+        ),
         max_stream_len=100,
     )
     await broker.connect()
@@ -745,8 +769,10 @@ async def test_publish_without_maxlen(redis_endpoint):
     """max_stream_len=None disables MAXLEN cap."""
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="no-maxlen-group",
-        consumer_name="no-maxlen-consumer",
+        consumer=RedisConsumerConfig(
+            group_name="no-maxlen-group",
+            consumer_name="no-maxlen-consumer",
+        ),
         max_stream_len=None,
     )
     await broker.connect()
@@ -776,8 +802,10 @@ async def test_connection_params_forwarded(redis_endpoint):
     ) as mock_from_url:
         broker = RedisBroker(
             dsn=redis_endpoint,
-            group_name="conn-group",
-            consumer_name="conn-consumer",
+            consumer=RedisConsumerConfig(
+                group_name="conn-group",
+                consumer_name="conn-consumer",
+            ),
             socket_timeout=3.0,
             health_check_interval=15,
             retry_on_timeout=False,
@@ -810,8 +838,10 @@ async def test_scheduler_migrates_multiple_queues_concurrently(
 
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="sched-multi-group",
-        consumer_name="sched-multi-consumer",
+        consumer=RedisConsumerConfig(
+            group_name="sched-multi-group",
+            consumer_name="sched-multi-consumer",
+        ),
         scheduler_interval=0.5,
     )
     await broker.connect()
@@ -853,8 +883,10 @@ async def test_migrate_loops_on_full_batch(redis_endpoint):
     """Migration loops when script returns a full batch."""
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="migrate-loop-group",
-        consumer_name="migrate-loop-consumer",
+        consumer=RedisConsumerConfig(
+            group_name="migrate-loop-group",
+            consumer_name="migrate-loop-consumer",
+        ),
         scheduler_interval=0.3,
     )
     await broker.connect()
@@ -883,9 +915,11 @@ async def test_pel_recovery_on_startup(redis_endpoint):
     # Consumer A reads a message but does NOT ack it
     broker_a = RedisBroker(
         dsn=redis_endpoint,
-        group_name="recovery-group",
-        consumer_name="recovery-consumer",
-        claim_idle_ms=0,
+        consumer=RedisConsumerConfig(
+            group_name="recovery-group",
+            consumer_name="recovery-consumer",
+            claim_idle_ms=0,
+        ),
     )
     await broker_a.connect()
     try:
@@ -903,9 +937,11 @@ async def test_pel_recovery_on_startup(redis_endpoint):
     # should re-deliver the pending message immediately
     broker_b = RedisBroker(
         dsn=redis_endpoint,
-        group_name="recovery-group",
-        consumer_name="recovery-consumer",
-        claim_idle_ms=0,
+        consumer=RedisConsumerConfig(
+            group_name="recovery-group",
+            consumer_name="recovery-consumer",
+            claim_idle_ms=0,
+        ),
     )
     await broker_b.connect()
     try:
@@ -924,9 +960,11 @@ async def test_pel_recovery_failure_logged(redis_endpoint):
     queue = "recovery-stream"
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="recovery-fail-group",
-        consumer_name="recovery-fail-consumer",
-        claim_idle_ms=0,
+        consumer=RedisConsumerConfig(
+            group_name="recovery-fail-group",
+            consumer_name="recovery-fail-consumer",
+            claim_idle_ms=0,
+        ),
     )
     await broker.connect()
     try:
@@ -969,8 +1007,10 @@ async def test_lua_pcall_skips_corrupt_entry(redis_endpoint):
 
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="pcall-group",
-        consumer_name="pcall-consumer",
+        consumer=RedisConsumerConfig(
+            group_name="pcall-group",
+            consumer_name="pcall-consumer",
+        ),
         scheduler_interval=0.5,
     )
     await broker.connect()
@@ -1022,8 +1062,10 @@ async def test_xgroup_create_connection_error_propagates(
     """ConnectionError from xgroup_create propagates (not caught)."""
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="conn-err-group",
-        consumer_name="conn-err-consumer",
+        consumer=RedisConsumerConfig(
+            group_name="conn-err-group",
+            consumer_name="conn-err-consumer",
+        ),
     )
     await broker.connect()
     try:
@@ -1047,9 +1089,11 @@ async def test_pel_recovery_no_pending_messages(redis_endpoint):
     queue = "recovery-stream"
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="recovery-empty-group",
-        consumer_name="recovery-empty-consumer",
-        claim_idle_ms=0,
+        consumer=RedisConsumerConfig(
+            group_name="recovery-empty-group",
+            consumer_name="recovery-empty-consumer",
+            claim_idle_ms=0,
+        ),
     )
     await broker.connect()
     try:
@@ -1118,9 +1162,11 @@ async def test_pel_recovery_poison_message_skipped(redis_endpoint):
     # skip poison and yield valid message
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name=group,
-        consumer_name=consumer,
-        claim_idle_ms=0,
+        consumer=RedisConsumerConfig(
+            group_name=group,
+            consumer_name=consumer,
+            claim_idle_ms=0,
+        ),
     )
     await broker.connect()
     try:
@@ -1142,10 +1188,12 @@ async def test_xautoclaim_returns_empty(redis_endpoint):
     queue = "claim-stream"
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="claim-empty-group",
-        consumer_name="claim-empty-consumer",
-        claim_idle_ms=1,
-        claim_interval=0,
+        consumer=RedisConsumerConfig(
+            group_name="claim-empty-group",
+            consumer_name="claim-empty-consumer",
+            claim_idle_ms=1,
+            claim_interval=0,
+        ),
     )
     await broker.connect()
     try:
@@ -1206,9 +1254,11 @@ async def test_pel_recovery_drains_full_pel(redis_endpoint):
     # recovered
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name=group,
-        consumer_name=consumer,
-        claim_idle_ms=0,
+        consumer=RedisConsumerConfig(
+            group_name=group,
+            consumer_name=consumer,
+            claim_idle_ms=0,
+        ),
     )
     await broker.connect()
     try:
@@ -1241,10 +1291,12 @@ async def test_xautoclaim_drains_when_cursor_not_exhausted(
     queue = "claim-stream"
     broker = RedisBroker(
         dsn=redis_endpoint,
-        group_name="claim-drain-group",
-        consumer_name="claim-drain-consumer",
-        claim_idle_ms=1,
-        claim_interval=0,
+        consumer=RedisConsumerConfig(
+            group_name="claim-drain-group",
+            consumer_name="claim-drain-consumer",
+            claim_idle_ms=1,
+            claim_interval=0,
+        ),
     )
     await broker.connect()
     try:
