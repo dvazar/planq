@@ -2299,36 +2299,33 @@ class TestSignalHandlingAndShutdown:
 
     @pytest.mark.asyncio
     async def test_run_shutdown_event_breaks_consume_loop(self, mock_message):
-        """shutdown_event.is_set() breaks the consume loop (line 735)."""
+        """shutdown_event.is_set() breaks the consume loop."""
         broker = AsyncMock()
+        broker.__aenter__ = AsyncMock(return_value=broker)
+        broker.__aexit__ = AsyncMock(return_value=False)
         app = Planq(broker=broker)
         messages_dispatched = 0
 
-        # Capture the shutdown Event created inside run()
-        shutdown_ref = {}
-        _OriginalEvent = asyncio.Event
-
-        class _CapturingEvent(_OriginalEvent):
-            def __init__(self):
-                super().__init__()
-                shutdown_ref["event"] = self
+        consumer = PlanqConsumer(
+            app,
+            middlewares=[],
+            install_signal_handlers=False,
+        )
 
         async def controlled_consume(queue, prefetch):
             for i in range(5):
                 yield mock_message(method="test.task", id=None)
-                if i == 1 and "event" in shutdown_ref:
-                    shutdown_ref["event"].set()
+                if i == 1:
+                    consumer._shutdown_event.set()
 
         broker.consume = controlled_consume
-        consumer = PlanqConsumer(app, middlewares=[])
 
         @app.task("test.task", mode=ExecutionMode.ASYNC)
         async def handler():
             nonlocal messages_dispatched
             messages_dispatched += 1
 
-        with patch("asyncio.Event", _CapturingEvent):
-            await consumer.run("test-queue")
+        await consumer.run("test-queue")
 
         # Loop broke early: only messages before shutdown was set
         assert messages_dispatched < 5
@@ -2438,6 +2435,184 @@ class TestSignalHandlingAndShutdown:
 
         # Verify shutdown called despite exception
         mock_pool.shutdown.assert_called_once_with(wait=True)
+
+    @pytest.mark.asyncio
+    async def test_stop_before_run_is_honored_on_next_message(
+        self,
+        mock_message,
+    ):
+        """stop() called before run() is honored on first message fetch."""
+        broker = AsyncMock()
+        broker.__aenter__ = AsyncMock(return_value=broker)
+        broker.__aexit__ = AsyncMock(return_value=False)
+        app = Planq(broker=broker)
+        handler_invocations = 0
+
+        async def yielding_consume(queue, prefetch):
+            yield mock_message(method="test.task", id=None)
+
+        broker.consume = yielding_consume
+
+        @app.task("test.task", mode=ExecutionMode.ASYNC)
+        async def handler():
+            nonlocal handler_invocations
+            handler_invocations += 1
+
+        consumer = PlanqConsumer(
+            app,
+            middlewares=[],
+            install_signal_handlers=False,
+        )
+
+        # Stop BEFORE run() is called.
+        await consumer.stop()
+
+        # run() must return without processing the message.
+        await asyncio.wait_for(consumer.run("test-queue"), timeout=2.0)
+
+        assert handler_invocations == 0
+
+    @pytest.mark.asyncio
+    async def test_stop_after_run_completed_is_noop(self):
+        """stop() is safe to call after run() has already returned."""
+        broker = AsyncMock()
+        broker.__aenter__ = AsyncMock(return_value=broker)
+        broker.__aexit__ = AsyncMock(return_value=False)
+        app = Planq(broker=broker)
+
+        async def empty_consume(queue, prefetch):
+            return
+            yield  # make it a generator
+
+        broker.consume = empty_consume
+
+        consumer = PlanqConsumer(
+            app,
+            middlewares=[],
+            install_signal_handlers=False,
+        )
+
+        # Let run() complete naturally (empty queue, no messages).
+        # Pre-set shutdown so it exits on entry without blocking.
+        await consumer.stop()
+        await consumer.run("test-queue")
+
+        # Calling stop() again after run() returned must not raise.
+        await consumer.stop()
+        await consumer.stop()
+
+    @pytest.mark.asyncio
+    async def test_stop_triggers_graceful_shutdown(self):
+        """stop() drains in-flight messages before run() returns."""
+        from planq.providers.memory import InMemoryBroker
+
+        app = Planq(broker=InMemoryBroker())
+        handler_started = asyncio.Event()
+        handler_can_finish = asyncio.Event()
+        processed: list[int] = []
+
+        @app.task(
+            "test.process",
+            queue_name="q",
+            mode=ExecutionMode.ASYNC,
+        )
+        async def handler(value: int) -> None:
+            handler_started.set()
+            await handler_can_finish.wait()
+            processed.append(value)
+
+        consumer = PlanqConsumer(
+            app,
+            middlewares=[],
+            install_signal_handlers=False,
+        )
+
+        run_task = asyncio.create_task(consumer.run("q"))
+        await asyncio.sleep(0)
+
+        # Publish one message; handler will block on the event.
+        await app.broker.publish(
+            "q",
+            JsonRpcRequest(
+                method="test.process",
+                params=[42],
+                id=None,
+            ),
+        )
+
+        # Wait until the handler has actually started executing.
+        await asyncio.wait_for(handler_started.wait(), timeout=2.0)
+
+        # Now the handler is genuinely in-flight. Signal shutdown.
+        await consumer.stop()
+        await app.broker.disconnect()
+
+        # Release the blocked handler. It must still complete
+        # before run_task returns -- that's the drain guarantee.
+        handler_can_finish.set()
+        await asyncio.wait_for(run_task, timeout=2.0)
+
+        assert processed == [42]
+
+    @pytest.mark.asyncio
+    async def test_install_signal_handlers_false_skips_signal_setup(self):
+        """install_signal_handlers=False prevents add_signal_handler calls."""
+        broker = AsyncMock()
+        broker.__aenter__ = AsyncMock(return_value=broker)
+        broker.__aexit__ = AsyncMock(return_value=False)
+        app = Planq(broker=broker)
+
+        async def empty_consume(queue, prefetch):
+            return
+            yield
+
+        broker.consume = empty_consume
+
+        consumer = PlanqConsumer(
+            app,
+            middlewares=[],
+            install_signal_handlers=False,
+        )
+
+        with patch.object(asyncio, "get_running_loop") as mock_get_loop:
+            loop = MagicMock()
+            mock_get_loop.return_value = loop
+            await consumer.run("test-queue")
+
+            # Neither SIGINT nor SIGTERM handler must be installed.
+            calls = loop.add_signal_handler.call_args_list
+            sigint_calls = [c for c in calls if c[0][0] == signal.SIGINT]
+            sigterm_calls = [c for c in calls if c[0][0] == signal.SIGTERM]
+            assert sigint_calls == []
+            assert sigterm_calls == []
+
+    @pytest.mark.asyncio
+    async def test_backwards_compat_signal_handlers_default_true(self):
+        """Default install_signal_handlers=True installs both handlers."""
+        broker = AsyncMock()
+        broker.__aenter__ = AsyncMock(return_value=broker)
+        broker.__aexit__ = AsyncMock(return_value=False)
+        app = Planq(broker=broker)
+
+        async def empty_consume(queue, prefetch):
+            return
+            yield
+
+        broker.consume = empty_consume
+
+        # No install_signal_handlers kwarg -> default True.
+        consumer = PlanqConsumer(app, middlewares=[])
+
+        with patch.object(asyncio, "get_running_loop") as mock_get_loop:
+            loop = MagicMock()
+            mock_get_loop.return_value = loop
+            await consumer.run("test-queue")
+
+            calls = loop.add_signal_handler.call_args_list
+            sigint_calls = [c for c in calls if c[0][0] == signal.SIGINT]
+            sigterm_calls = [c for c in calls if c[0][0] == signal.SIGTERM]
+            assert len(sigint_calls) == 1
+            assert len(sigterm_calls) == 1
 
 
 class TestRunMany:

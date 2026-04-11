@@ -268,6 +268,8 @@ class PlanqConsumer:
         process_workers: int | None = None,
         settings: ConsumerSettings | None = None,
         middlewares: list[Middleware] | None = None,
+        *,
+        install_signal_handlers: bool = True,
     ) -> None:
         """Initialize the consumer with a Planq application.
 
@@ -283,6 +285,13 @@ class PlanqConsumer:
                 :class:`~planq.middleware.Middleware` instances.
                 Defaults to ``[DeadlineMiddleware()]`` when ``None``.
                 Pass an empty list to disable all middleware.
+            install_signal_handlers: When True (default), ``run()``
+                installs SIGINT and SIGTERM handlers that trigger a
+                graceful shutdown. Set to False when embedding the
+                consumer in a host application that already owns
+                these signals (e.g., uvicorn ASGI lifespan). In that
+                case, call :meth:`stop` from the host's shutdown
+                hook to drain the consumer.
         """
         self.app = app
         self.broker = app.broker
@@ -302,6 +311,28 @@ class PlanqConsumer:
         self._params_converter = ParamsConverter()
         self._build_pipeline()
         self._reject_callbacks = []
+        self._install_signal_handlers = install_signal_handlers
+        self._shutdown_event: asyncio.Event = asyncio.Event()
+
+    async def stop(self) -> None:
+        """Signal a graceful shutdown of the consumer loop.
+
+        Safe to call from another coroutine (e.g., an ASGI
+        ``lifespan.shutdown`` handler). Sets the internal
+        shutdown event, which causes the
+        ``async for msg in broker.consume(...)`` loop in each
+        queue consumer to break at the next iteration. In-flight
+        messages are drained by the ``asyncio.TaskGroup`` in
+        :meth:`run` before it returns.
+
+        Idempotent: safe to call before :meth:`run` starts (in
+        which case ``run()`` exits on the first message fetch),
+        after :meth:`run` completes, or multiple times. Does not
+        forcibly unblock a currently-blocked ``broker.consume()``
+        call; on an idle broker, shutdown latency is bounded by
+        the broker's poll interval.
+        """
+        self._shutdown_event.set()
 
     def on_reject(
         self,
@@ -765,16 +796,20 @@ class PlanqConsumer:
         """Consume from multiple queues concurrently.
 
         Installs SIGINT/SIGTERM handlers that trigger a clean
-        drain of in-flight messages before exiting. Shuts down
-        the process pool (if any) after the event loop exits.
+        drain of in-flight messages before exiting (unless
+        ``install_signal_handlers=False`` was passed to the
+        constructor). Shuts down the process pool (if any) after
+        the event loop exits. A consumer instance is single-use:
+        a second call to ``run()`` on the same instance is not
+        supported.
 
         Args:
             queues: Queue names to consume from.
         """
         loop = asyncio.get_running_loop()
-        shutdown_event = asyncio.Event()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, shutdown_event.set)
+        if self._install_signal_handlers:
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, self._shutdown_event.set)
 
         try:
             async with self.broker:
@@ -782,7 +817,12 @@ class PlanqConsumer:
                     sem = asyncio.Semaphore(self._settings.concurrency)
                     for queue in queues:
                         tg.create_task(
-                            self._consume_queue(queue, sem, shutdown_event, tg)
+                            self._consume_queue(
+                                queue,
+                                sem,
+                                self._shutdown_event,
+                                tg,
+                            )
                         )
         finally:
             if self._pool is not None:
