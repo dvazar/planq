@@ -168,13 +168,12 @@ class PlanqTask(Generic[P, T]):
                 self._func(*args, **kwargs)
             return "eager"
 
-        if not self._app._connected:
-            if self._app._connect_lock is None:
-                self._app._connect_lock = asyncio.Lock()
-            async with self._app._connect_lock:
-                if not self._app._connected:
-                    await self._app.broker.connect()
-                    self._app._connected = True
+        # Always go through broker.connect() before each publish.
+        # Brokers must implement an idempotent fast path so this is
+        # a cheap no-op when already connected, and a real reconnect
+        # when the broker has been torn down (e.g. by a previous
+        # disconnect from a sibling consumer's lifecycle).
+        await self._app.broker.connect()
 
         return await self._app.broker.publish(
             self.queue_name,
@@ -256,8 +255,6 @@ class Planq:
         self.broker = broker
         self.eager = eager
         self.routes: dict[str, TaskRoute] = {}
-        self._connected: bool = False
-        self._connect_lock: asyncio.Lock | None = None
 
     def _dispatch(
         self,
@@ -349,9 +346,12 @@ class Planq:
 class SyncPlanq(Planq):
     """Synchronous variant of Planq using a daemon thread.
 
-    Manages a background event loop in a daemon thread. The
-    broker connects eagerly in ``__init__`` and all ``.send()``
-    calls block until the broker confirms the message.
+    Lazily manages a background event loop in a daemon thread.
+    The loop, the worker thread, and the broker connection are
+    all created on the first ``.send()`` call -- construction
+    is free of side effects so that ``SyncPlanq`` is safe to
+    instantiate from import-time hooks (e.g. Django
+    ``AppConfig.ready``) even when no message will be sent.
 
     Use as a context manager for clean shutdown::
 
@@ -361,33 +361,78 @@ class SyncPlanq(Planq):
     """
 
     def __init__(self, broker: BaseBroker, *, eager: bool = False) -> None:
-        """Initialize and start the background event loop.
+        """Initialize without starting the background loop.
 
-        In eager mode, skips creating the background loop and
-        thread -- handlers run directly in the calling thread.
+        In eager mode, no background loop is ever created --
+        handlers run directly in the calling thread.
 
         Args:
-            broker: Broker instance (connected eagerly unless eager).
+            broker: Broker instance (connected lazily on first send).
             eager: When True, skip background loop creation.
         """
         super().__init__(broker, eager=eager)
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
-        if not eager:
-            self._loop = asyncio.new_event_loop()
+        self._external_loop = False
+        self._init_lock = threading.Lock()
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Reuse an externally-managed loop instead of starting one.
+
+        Use this in embedded mode -- typically from an ASGI
+        ``lifespan.startup`` handler -- when another component in
+        the same process already runs an event loop and the
+        broker connection lives on it. After binding, every sync
+        ``.send()`` submits its publish coroutine to ``loop``
+        instead of starting a private background loop, which
+        keeps producer and consumer on the same loop and avoids
+        cross-loop ``Future attached to a different loop`` errors
+        from loop-bound clients (e.g. ``redis.asyncio``).
+
+        Must be called before any ``.send()`` on this app, and
+        only once. The caller retains ownership of ``loop`` --
+        :meth:`close` will not stop or close it, and will not
+        disconnect the broker (the loop owner is responsible for
+        broker lifecycle, e.g. via ``async with self.broker``).
+
+        Args:
+            loop: The externally-managed event loop to bind to.
+
+        Raises:
+            RuntimeError: If a loop has already been initialized
+                (either by a previous ``bind_loop`` call or by an
+                earlier ``.send()`` that started the bg loop).
+        """
+        with self._init_lock:
+            if self._loop is not None:
+                raise RuntimeError(
+                    "SyncPlanq loop is already initialized; "
+                    "bind_loop must be called before any .send() "
+                    "and only once"
+                )
+            self._loop = loop
+            self._external_loop = True
+
+    def _ensure_loop(self) -> None:
+        if self._loop is not None:
+            return
+        with self._init_lock:
+            if self._loop is not None:
+                return
+            loop = asyncio.new_event_loop()
             self._thread = threading.Thread(
                 target=self._run_background_loop,
+                args=(loop,),
                 daemon=True,
             )
             self._thread.start()
-            self._run_sync(self.broker.connect())
-            self._connected = True
+            self._loop = loop
 
-    def _run_background_loop(self) -> None:
+    def _run_background_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Run the event loop in the background thread."""
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_forever()
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
 
     def _run_sync(self, coro: Coroutine[Any, Any, Any]) -> Any:
         """Submit a coroutine to the background loop and block.
@@ -408,7 +453,8 @@ class SyncPlanq(Planq):
         """Dispatch a coroutine synchronously.
 
         In eager mode, uses ``asyncio.run()`` since there is no
-        background event loop.
+        background event loop. Otherwise, lazily starts the
+        background loop on first call.
 
         Args:
             coro: The coroutine to dispatch.
@@ -418,18 +464,29 @@ class SyncPlanq(Planq):
         """
         if self.eager:
             return asyncio.run(coro)
+        self._ensure_loop()
         return self._run_sync(coro)
 
     def close(self) -> None:
-        """Disconnect the broker and stop the background loop."""
-        if self._loop is not None:
-            self._run_sync(self.broker.disconnect())
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._thread is not None:
-            self._thread.join()
-        if self._loop is not None:
-            self._loop.close()
-        self._connected = False
+        """Disconnect the broker and stop the background loop.
+
+        No-op when the loop has never been started (e.g. when
+        ``SyncPlanq`` was constructed but no message was sent).
+        ``broker.disconnect()`` is idempotent at the broker layer,
+        so it is safe to call here unconditionally.
+
+        When bound to an externally-managed loop via
+        :meth:`bind_loop`, this is a no-op: the caller owns the
+        loop and the broker lifecycle.
+        """
+        if self._loop is None:
+            return
+        if self._external_loop:
+            return
+        self._run_sync(self.broker.disconnect())
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join()
+        self._loop.close()
 
     def __enter__(self) -> SyncPlanq:
         """Enter context manager (already connected)."""

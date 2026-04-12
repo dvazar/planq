@@ -509,13 +509,21 @@ class RedisBroker(BaseBroker):
         self._client: Redis | None = None
         self._scheduler_task: asyncio.Task[None] | None = None
         self._migrate_script: AsyncScript | None = None
+        self._connect_lock: asyncio.Lock | None = None
 
     @override
     async def connect(self) -> None:
         """Create a Redis client and start the scheduler task.
 
-        Idempotent: calling :meth:`connect` on an already-connected
-        broker is a no-op and reuses the existing client.
+        Idempotent and race-safe: calling :meth:`connect` on an
+        already-connected broker is a no-op fast path; concurrent
+        first-time calls are serialized so only one client is
+        created. Calling :meth:`connect` after a previous
+        :meth:`disconnect` rebuilds the client and (if a consumer
+        config was provided) restarts the scheduler -- this is the
+        recovery path used by the producer when the broker has
+        been torn down by the consumer's lifecycle (e.g. an
+        ``async with self.broker:`` block exited).
 
         The delayed-message scheduler and the ``MIGRATE_LUA`` script
         run only when a :class:`RedisConsumerConfig` was provided.
@@ -524,17 +532,26 @@ class RedisBroker(BaseBroker):
         """
         if self._client is not None:
             return
-        self._client = Redis.from_url(
-            self.dsn,
-            decode_responses=True,
-            socket_timeout=self._socket_timeout,
-            health_check_interval=self._health_check_interval,
-            retry_on_timeout=self._retry_on_timeout,
-            max_connections=self._max_connections,
-        )
-        if self._consumer is not None:
-            self._migrate_script = self._client.register_script(MIGRATE_LUA)
-            self._scheduler_task = asyncio.create_task(self._run_scheduler())
+        if self._connect_lock is None:
+            self._connect_lock = asyncio.Lock()
+        async with self._connect_lock:
+            if self._client is not None:
+                return
+            self._client = Redis.from_url(
+                self.dsn,
+                decode_responses=True,
+                socket_timeout=self._socket_timeout,
+                health_check_interval=self._health_check_interval,
+                retry_on_timeout=self._retry_on_timeout,
+                max_connections=self._max_connections,
+            )
+            if self._consumer is not None:
+                self._migrate_script = self._client.register_script(
+                    MIGRATE_LUA
+                )
+                self._scheduler_task = asyncio.create_task(
+                    self._run_scheduler()
+                )
 
     @override
     async def disconnect(self) -> None:

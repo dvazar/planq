@@ -262,6 +262,74 @@ class TestConnectIdempotent:
             b._scheduler_task = None
 
 
+class TestConnectReconnects:
+    """Cover the reconnect-after-disconnect path of connect()."""
+
+    @pytest.mark.asyncio
+    async def test_connect_after_disconnect_rebuilds_client(self) -> None:
+        """connect() after disconnect() builds a fresh client.
+
+        This is the recovery path that lets a producer publish
+        again after the broker has been torn down (e.g. by a
+        sibling consumer's ``async with broker:`` block exiting).
+        """
+        b = RedisBroker(dsn="redis://localhost")
+        client_v1 = MagicMock()
+        client_v1.aclose = AsyncMock()
+        client_v2 = MagicMock()
+
+        clients = iter([client_v1, client_v2])
+
+        with patch(
+            "planq.providers.redis.Redis.from_url",
+            side_effect=lambda *a, **kw: next(clients),
+        ) as from_url:
+            await b.connect()
+            assert b._client is client_v1
+            await b.disconnect()
+            assert b._client is None
+            await b.connect()
+            assert b._client is client_v2
+            assert from_url.call_count == 2
+        b._client = None
+
+    @pytest.mark.asyncio
+    async def test_concurrent_connect_after_disconnect_creates_one_client(
+        self,
+    ) -> None:
+        """Two concurrent connects after disconnect only create one client.
+
+        Pre-acquires the broker's connect lock externally so both
+        coroutines queue up on it; the first proceeds past the
+        inner double-check and creates the client, the second
+        wakes inside the lock and hits the inner ``return``.
+        """
+        b = RedisBroker(dsn="redis://localhost")
+        b._connect_lock = asyncio.Lock()
+        await b._connect_lock.acquire()
+
+        fake_client = MagicMock()
+
+        with patch(
+            "planq.providers.redis.Redis.from_url",
+            return_value=fake_client,
+        ) as from_url:
+            task_a = asyncio.create_task(b.connect())
+            task_b = asyncio.create_task(b.connect())
+
+            # Let both tasks reach `async with self._connect_lock`
+            # and block on acquire.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+            b._connect_lock.release()
+            await asyncio.gather(task_a, task_b)
+
+        assert from_url.call_count == 1
+        assert b._client is fake_client
+        b._client = None
+
+
 class TestNotConnected:
     """Cover user-facing RuntimeError when broker is not connected."""
 

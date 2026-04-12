@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Final, override
@@ -159,6 +160,7 @@ class SqsBroker(BaseBroker):
         self._session: AioSession | None = None
         self._client: Any = None
         self._client_ctx: Any = None
+        self._connect_lock: asyncio.Lock | None = None
 
     def get_queue_name(self, identifier: str) -> str:
         """Derive a queue name from an SQS URL or ARN."""
@@ -176,13 +178,26 @@ class SqsBroker(BaseBroker):
 
     @override
     async def connect(self) -> None:
-        """Create an ``aiobotocore`` SQS client and enter its context."""
-        self._session = AioSession()
-        self._client_ctx = self._session.create_client(
-            "sqs",
-            endpoint_url=self.dsn,
-        )
-        self._client = await self._client_ctx.__aenter__()
+        """Create an ``aiobotocore`` SQS client and enter its context.
+
+        Idempotent and race-safe: a no-op fast path when already
+        connected; concurrent first-time calls are serialized so
+        only one client context is entered. Calling :meth:`connect`
+        after :meth:`disconnect` rebuilds the client.
+        """
+        if self._client is not None:
+            return
+        if self._connect_lock is None:
+            self._connect_lock = asyncio.Lock()
+        async with self._connect_lock:
+            if self._client is not None:
+                return
+            self._session = AioSession()
+            self._client_ctx = self._session.create_client(
+                "sqs",
+                endpoint_url=self.dsn,
+            )
+            self._client = await self._client_ctx.__aenter__()
 
     @override
     async def disconnect(self) -> None:

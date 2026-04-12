@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -446,18 +448,98 @@ class TestPlanqTaskOptions:
 class TestSyncPlanq:
     """Tests for the SyncPlanq synchronous wrapper."""
 
-    def test_init_starts_thread_and_connects(self):
-        """SyncPlanq starts a daemon thread and connects the
-        broker."""
+    def test_init_does_not_start_thread_or_connect(self):
+        """SyncPlanq construction is lazy: no thread, no connect."""
         broker = _make_broker()
-        broker.connect = AsyncMock()
-        broker.disconnect = AsyncMock()
 
         app = SyncPlanq(broker)
 
+        assert app._thread is None
+        assert app._loop is None
+        broker.connect.assert_not_awaited()
+        app.close()
+
+    def test_first_send_starts_thread_and_connects(self):
+        """First .send() lazily creates the loop and connects."""
+        broker = _make_broker()
+
+        app = SyncPlanq(broker)
+
+        @app.task("t", queue_name="q")
+        def my_task(x: int): ...
+
+        my_task.send(x=1)
+
+        assert app._thread is not None
         assert app._thread.is_alive()
         broker.connect.assert_awaited_once()
         app.close()
+
+    def test_subsequent_sends_publish_again(self):
+        """Two .send() calls publish two messages on the same loop."""
+        broker = _make_broker()
+
+        app = SyncPlanq(broker)
+
+        @app.task("t", queue_name="q")
+        def my_task(x: int): ...
+
+        my_task.send(x=1)
+        my_task.send(x=2)
+
+        assert broker.publish.call_count == 2
+        app.close()
+
+    def test_concurrent_first_send_thread_safe(self):
+        """Many threads racing on first .send() init the loop once."""
+        broker = _make_broker()
+
+        async def slow_connect():
+            await asyncio.sleep(0.05)
+
+        broker.connect = AsyncMock(side_effect=slow_connect)
+
+        app = SyncPlanq(broker)
+
+        @app.task("t", queue_name="q")
+        def my_task(x: int): ...
+
+        n_threads = 16
+        barrier = threading.Barrier(n_threads)
+        errors: list[BaseException] = []
+        loops_seen: set[int] = set()
+        lock = threading.Lock()
+
+        def worker():
+            try:
+                barrier.wait()
+                my_task.send(x=1)
+                with lock:
+                    if app._loop is not None:
+                        loops_seen.add(id(app._loop))
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+        assert len(loops_seen) == 1
+        assert broker.publish.call_count == n_threads
+        app.close()
+
+    def test_close_without_send_is_safe(self):
+        """close() on a never-used app does not touch the broker."""
+        broker = _make_broker()
+
+        app = SyncPlanq(broker)
+        app.close()
+
+        broker.connect.assert_not_awaited()
+        broker.disconnect.assert_not_awaited()
 
     def test_send_returns_message_id(self):
         """Sync .send() returns a plain string message ID."""
@@ -497,29 +579,56 @@ class TestSyncPlanq:
         app.close()
 
     def test_close_disconnects_and_stops_thread(self):
-        """close() disconnects broker and joins thread."""
+        """close() disconnects broker and joins thread after send."""
         broker = _make_broker()
         broker.connect = AsyncMock()
         broker.disconnect = AsyncMock()
 
         app = SyncPlanq(broker)
+
+        @app.task("t", queue_name="q")
+        def my_task(x: int): ...
+
+        my_task.send(x=1)
+        thread = app._thread
         app.close()
 
         broker.disconnect.assert_awaited_once()
-        assert not app._thread.is_alive()
+        assert thread is not None
+        assert not thread.is_alive()
 
-    def test_context_manager(self):
-        """with SyncPlanq(...) connects and disconnects."""
+    def test_context_manager_no_send_is_noop(self):
+        """`with SyncPlanq(...)` without sends performs no I/O."""
         broker = _make_broker()
         broker.connect = AsyncMock()
         broker.disconnect = AsyncMock()
 
         with SyncPlanq(broker) as app:
+            assert app._thread is None
+            assert app._loop is None
+
+        broker.connect.assert_not_awaited()
+        broker.disconnect.assert_not_awaited()
+
+    def test_context_manager_with_send(self):
+        """`with SyncPlanq(...)` connects on send and disconnects."""
+        broker = _make_broker()
+        broker.connect = AsyncMock()
+        broker.disconnect = AsyncMock()
+
+        with SyncPlanq(broker) as app:
+
+            @app.task("t", queue_name="q")
+            def my_task(x: int): ...
+
+            my_task.send(x=1)
+            assert app._thread is not None
             assert app._thread.is_alive()
+            thread = app._thread
 
         broker.connect.assert_awaited_once()
         broker.disconnect.assert_awaited_once()
-        assert not app._thread.is_alive()
+        assert not thread.is_alive()
 
     def test_task_decorator_works(self):
         """@app.task() registers routes and returns PlanqTask."""
@@ -552,6 +661,150 @@ class TestSyncPlanq:
         _, kwargs = broker.publish.call_args
         assert kwargs["delay"] == 30.0
         app.close()
+
+
+# === TestSyncPlanqBindLoop ===
+
+
+class _ExternalLoop:
+    """Helper that runs an asyncio loop in a daemon thread."""
+
+    def __init__(self) -> None:
+        self.loop = asyncio.new_event_loop()
+        self._ready = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        self._ready.wait()
+
+    def _run(self) -> None:
+        asyncio.set_event_loop(self.loop)
+        self.loop.call_soon(self._ready.set)
+        self.loop.run_forever()
+
+    def close(self) -> None:
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join()
+        self.loop.close()
+
+
+class TestSyncPlanqBindLoop:
+    """Tests for SyncPlanq.bind_loop() (embedded ASGI mode)."""
+
+    def test_bind_loop_does_not_start_thread(self):
+        """bind_loop() reuses the external loop, no bg thread."""
+        broker = _make_broker()
+        external = _ExternalLoop()
+        try:
+            app = SyncPlanq(broker)
+            app.bind_loop(external.loop)
+
+            assert app._loop is external.loop
+            assert app._thread is None
+        finally:
+            external.close()
+
+    def test_bind_loop_dispatches_to_external_loop(self):
+        """Publish coro runs on the bound external loop."""
+        broker = _make_broker()
+        captured: dict[str, Any] = {}
+
+        async def capture_loop(*args: Any, **kwargs: Any) -> str:
+            captured["publish_loop"] = asyncio.get_running_loop()
+            return "msg-id-123"
+
+        broker.publish = AsyncMock(side_effect=capture_loop)
+
+        external = _ExternalLoop()
+        try:
+            app = SyncPlanq(broker)
+            app.bind_loop(external.loop)
+
+            @app.task("t", queue_name="q")
+            def my_task(x: int): ...
+
+            result = my_task.send(x=1)
+
+            assert result == "msg-id-123"
+            assert captured["publish_loop"] is external.loop
+        finally:
+            external.close()
+
+    def test_bind_loop_connect_runs_on_external_loop(self):
+        """Lazy connect also runs on the bound external loop."""
+        broker = _make_broker()
+        captured: dict[str, Any] = {}
+
+        async def capture_connect_loop() -> None:
+            captured["connect_loop"] = asyncio.get_running_loop()
+
+        broker.connect = AsyncMock(side_effect=capture_connect_loop)
+
+        external = _ExternalLoop()
+        try:
+            app = SyncPlanq(broker)
+            app.bind_loop(external.loop)
+
+            @app.task("t", queue_name="q")
+            def my_task(x: int): ...
+
+            my_task.send(x=1)
+
+            assert captured["connect_loop"] is external.loop
+        finally:
+            external.close()
+
+    def test_bind_loop_close_does_not_stop_external_loop(self):
+        """close() leaves the externally-owned loop running."""
+        broker = _make_broker()
+        external = _ExternalLoop()
+        try:
+            app = SyncPlanq(broker)
+            app.bind_loop(external.loop)
+
+            @app.task("t", queue_name="q")
+            def my_task(x: int): ...
+
+            my_task.send(x=1)
+            app.close()
+
+            assert external.loop.is_running()
+            assert external.thread.is_alive()
+            broker.disconnect.assert_not_awaited()
+        finally:
+            external.close()
+
+    def test_bind_loop_after_send_raises(self):
+        """Calling bind_loop after the bg loop was created raises."""
+        broker = _make_broker()
+        app = SyncPlanq(broker)
+
+        @app.task("t", queue_name="q")
+        def my_task(x: int): ...
+
+        my_task.send(x=1)
+
+        external = _ExternalLoop()
+        try:
+            with pytest.raises(RuntimeError, match="already"):
+                app.bind_loop(external.loop)
+        finally:
+            external.close()
+            app.close()
+
+    def test_bind_loop_twice_raises(self):
+        """Calling bind_loop twice raises."""
+        broker = _make_broker()
+        external1 = _ExternalLoop()
+        external2 = _ExternalLoop()
+        try:
+            app = SyncPlanq(broker)
+            app.bind_loop(external1.loop)
+
+            with pytest.raises(RuntimeError, match="already"):
+                app.bind_loop(external2.loop)
+        finally:
+            external1.close()
+            external2.close()
 
 
 # === TestPlanqApp ===
@@ -828,7 +1081,6 @@ class TestEagerMode:
     ) -> None:
         broker = _make_broker()
         app = Planq(broker, eager=False)
-        app._connected = True  # skip lazy connect
 
         @app.task(name="test.normal")
         async def normal(x: int) -> int:
@@ -838,76 +1090,50 @@ class TestEagerMode:
         broker.publish.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_lazy_connect_reuses_existing_lock(
+    async def test_send_reconnects_after_broker_disconnect(
         self,
     ) -> None:
-        """Second send reuses the existing _connect_lock."""
-        broker = _make_broker()
+        """Producer auto-reconnects when broker becomes disconnected.
+
+        Reproduces the embedded-mode bug: the consumer's
+        ``async with self.broker:`` block exits (e.g. crash,
+        lifespan shutdown) and clears the broker's client. The
+        producer's next ``.send()`` must call ``connect()`` again
+        instead of relying on a stale "already connected" cache.
+        """
+        state = {"connected": False}
+
+        async def fake_connect() -> None:
+            state["connected"] = True
+
+        async def fake_disconnect() -> None:
+            state["connected"] = False
+
+        async def fake_publish(*_args: Any, **_kwargs: Any) -> str:
+            if not state["connected"]:
+                raise RuntimeError("not connected")
+            return "msg-id"
+
+        broker = MagicMock()
+        broker.connect = AsyncMock(side_effect=fake_connect)
+        broker.disconnect = AsyncMock(side_effect=fake_disconnect)
+        broker.publish = AsyncMock(side_effect=fake_publish)
+
         app = Planq(broker, eager=False)
 
-        @app.task(name="test.reuse_lock")
-        async def task_a(x: int) -> int:
+        @app.task("t", queue_name="q")
+        async def my_task(x: int) -> int:
             return x
 
-        await task_a.send(x=1)
-        assert app._connect_lock is not None
-        lock = app._connect_lock
+        result1 = await my_task.send(x=1)
+        assert result1 == "msg-id"
 
-        await task_a.send(x=2)
-        assert app._connect_lock is lock
+        await broker.disconnect()
+        assert state["connected"] is False
 
-    @pytest.mark.asyncio
-    async def test_lazy_connect_inner_check_skips(
-        self,
-    ) -> None:
-        """Inner _connected check skips connect when first
-        coroutine already set the flag inside the lock."""
-        import asyncio as _asyncio
-
-        broker = _make_broker()
-        app = Planq(broker, eager=False)
-
-        @app.task(name="test.double")
-        async def task_b(x: int) -> int:
-            return x
-
-        # Make connect slow so the second coro enters the outer
-        # if-block while the first holds the lock.
-        entered = _asyncio.Event()
-        proceed = _asyncio.Event()
-
-        async def _slow_connect() -> None:
-            entered.set()
-            await proceed.wait()
-
-        broker.connect = AsyncMock(side_effect=_slow_connect)
-        app._connected = False
-
-        async def _first() -> str:
-            return await task_b.send(x=1)
-
-        async def _second() -> str:
-            # Wait until first coro is inside connect().
-            await entered.wait()
-            # Now first coro holds the lock and _connected is
-            # still False.  The second coro enters the outer
-            # if-block (sees _connected=False) and blocks on
-            # the lock.  When first coro finishes, it sets
-            # _connected=True.  Second coro then enters the
-            # lock and sees _connected=True → skips connect.
-            return await task_b.send(x=2)
-
-        t1 = _asyncio.create_task(_first())
-        t2 = _asyncio.create_task(_second())
-
-        # Let both tasks start; first is in slow connect,
-        # second is queued on the lock.
-        await _asyncio.sleep(0.01)
-        proceed.set()
-
-        await _asyncio.gather(t1, t2)
-        # connect called exactly once (second hit inner skip).
-        assert broker.connect.call_count == 1
+        result2 = await my_task.send(x=2)
+        assert result2 == "msg-id"
+        assert state["connected"] is True
 
 
 # === TestSyncPlanqEager ===

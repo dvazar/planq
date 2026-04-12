@@ -6,7 +6,7 @@ import pytest
 from django.test import override_settings
 
 import planq.contrib.django.setup as _setup_mod
-from planq import Planq
+from planq import Planq, SyncPlanq
 from planq.contrib.django.setup import (
     configure_planq,
     get_planq_app,
@@ -70,9 +70,14 @@ class TestConfigurePlanq:
         assert app.eager is False
 
     def test_lazy_connection(self) -> None:
-        """Broker.connect() is NOT called during configure."""
-        app = configure_planq()
-        assert app._connected is False
+        """configure_planq() does not call broker.connect()."""
+        from unittest.mock import AsyncMock, patch
+
+        with patch.object(
+            InMemoryBroker, "connect", new_callable=AsyncMock
+        ) as mock_connect:
+            configure_planq()
+            mock_connect.assert_not_called()
 
     def test_re_entrant(self) -> None:
         """Calling configure_planq() again replaces singleton."""
@@ -80,6 +85,63 @@ class TestConfigurePlanq:
         app2 = configure_planq()
         assert app1 is not app2
         assert get_planq_app() is app2
+
+
+class TestAppClass:
+    """Tests for the PLANQ['APP_CLASS'] setting."""
+
+    def test_default_app_class_is_planq(self) -> None:
+        """Without APP_CLASS, configure_planq() builds Planq."""
+        app = configure_planq()
+        assert type(app) is Planq
+
+    @override_settings(
+        PLANQ={
+            "BROKER_CLASS": ("planq.providers.memory.InMemoryBroker"),
+            "APP_CLASS": "planq.SyncPlanq",
+        }
+    )
+    def test_app_class_sync_planq(self) -> None:
+        """APP_CLASS dotted path resolves to SyncPlanq."""
+        app = configure_planq()
+        assert type(app) is SyncPlanq
+
+    @override_settings(
+        PLANQ={
+            "BROKER_CLASS": ("planq.providers.memory.InMemoryBroker"),
+            "APP_CLASS": "planq.SyncPlanq",
+        }
+    )
+    def test_sync_app_class_does_not_connect(self) -> None:
+        """SyncPlanq via APP_CLASS does not start loop on configure."""
+        app = configure_planq()
+        assert isinstance(app, SyncPlanq)
+        assert app._loop is None
+        assert app._thread is None
+
+    @override_settings(
+        PLANQ={
+            "BROKER_CLASS": ("planq.providers.memory.InMemoryBroker"),
+            "APP_CLASS": "planq.SyncPlanq",
+            "EAGER": True,
+        }
+    )
+    def test_app_class_eager_passed(self) -> None:
+        """APP_CLASS receives EAGER flag from settings."""
+        app = configure_planq()
+        assert type(app) is SyncPlanq
+        assert app.eager is True
+
+    @override_settings(
+        PLANQ={
+            "BROKER_CLASS": ("planq.providers.memory.InMemoryBroker"),
+            "APP_CLASS": "nonexistent.module.Class",
+        }
+    )
+    def test_app_class_invalid_path_raises(self) -> None:
+        """Invalid APP_CLASS path raises ImportError."""
+        with pytest.raises(ImportError):
+            configure_planq()
 
 
 class TestGetPlanqMiddlewares:

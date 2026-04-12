@@ -30,9 +30,12 @@ def configure_planq() -> Planq:
     """Create and configure a Planq instance from Django settings.
 
     Reads the ``PLANQ`` dict from ``django.conf.settings`` and
-    constructs a :class:`~planq.Planq` instance with the specified
-    broker. Safe to call multiple times -- replaces the previous
-    instance.
+    constructs the application class specified by ``APP_CLASS``
+    (defaults to :class:`~planq.Planq`) with the broker built
+    from ``BROKER_CLASS`` and ``BROKER_OPTIONS``. For producer
+    use from synchronous Django code, set ``APP_CLASS`` to
+    ``"planq.SyncPlanq"``. Safe to call multiple times -- replaces
+    the previous instance.
 
     Returns:
         The configured Planq instance.
@@ -46,7 +49,8 @@ def configure_planq() -> Planq:
     broker_class = import_string(config["BROKER_CLASS"])
     broker = broker_class(**config.get("BROKER_OPTIONS", {}))
 
-    _app = Planq(broker=broker, eager=config.get("EAGER", False))
+    app_class = import_string(config.get("APP_CLASS", "planq.Planq"))
+    _app = app_class(broker=broker, eager=config.get("EAGER", False))
     return _app
 
 
