@@ -9,36 +9,34 @@ from django.db import close_old_connections
 from planq.middleware import Middleware
 
 if TYPE_CHECKING:
-    from planq.message import BrokerMessage
-    from planq.middleware import CallNext
-    from planq.models import JsonRpcResponse
+    from planq.context import PlanqContext
 
 
 class DjangoDbMiddleware(Middleware):
-    """Close stale Django DB connections before and after each task.
+    """Close stale Django DB connections around each task handler.
+
+    Uses :meth:`before_execute` / :meth:`after_execute` so that
+    ``close_old_connections()`` runs in the handler's execution
+    context — the same thread where Django ORM operations happen.
 
     Automatically prepended to the middleware list by
     :func:`~planq.contrib.django.setup.get_planq_middlewares`.
     """
 
-    async def __call__(
-        self,
-        msg: BrokerMessage,
-        call_next: CallNext,
-    ) -> JsonRpcResponse | None:
-        """Close stale connections around task execution.
+    def before_execute(self, ctx: PlanqContext) -> None:
+        """Close stale DB connections before handler execution.
 
         Args:
-            msg: The incoming broker message.
-            call_next: Awaitable that invokes the next middleware
-                or the terminal router endpoint.
-
-        Returns:
-            The JSON-RPC response (for requests) or ``None``
-            (for notifications or skipped messages).
+            ctx: The execution context for the current handler
+                invocation.
         """
         close_old_connections()
-        try:
-            return await call_next(msg)
-        finally:
-            close_old_connections()
+
+    def after_execute(self, ctx: PlanqContext) -> None:
+        """Close stale DB connections after handler execution.
+
+        Args:
+            ctx: The execution context for the current handler
+                invocation.
+        """
+        close_old_connections()

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+import inspect
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from planq.contrib.django.middleware import (
-    DjangoDbMiddleware,
-)
+from planq.context import PlanqContext
+from planq.contrib.django.middleware import DjangoDbMiddleware
+from planq.middleware import Middleware
 
 
 @pytest.fixture
@@ -17,48 +18,54 @@ def middleware() -> DjangoDbMiddleware:
 
 
 @pytest.fixture
-def mock_message() -> MagicMock:
-    return MagicMock()
+def ctx() -> PlanqContext:
+    return PlanqContext()
 
 
 class TestDjangoDbMiddleware:
-    @pytest.mark.asyncio
+    def test_is_middleware_subclass(
+        self, middleware: DjangoDbMiddleware
+    ) -> None:
+        assert isinstance(middleware, Middleware)
+
     @patch("planq.contrib.django.middleware.close_old_connections")
-    async def test_calls_close_before_and_after(
+    def test_before_execute_calls_close(
         self,
         mock_close: MagicMock,
         middleware: DjangoDbMiddleware,
-        mock_message: MagicMock,
+        ctx: PlanqContext,
     ) -> None:
-        call_next = AsyncMock(return_value=None)
-        await middleware(mock_message, call_next)
+        middleware.before_execute(ctx)
+        mock_close.assert_called_once()
 
+    @patch("planq.contrib.django.middleware.close_old_connections")
+    def test_after_execute_calls_close(
+        self,
+        mock_close: MagicMock,
+        middleware: DjangoDbMiddleware,
+        ctx: PlanqContext,
+    ) -> None:
+        middleware.after_execute(ctx)
+        mock_close.assert_called_once()
+
+    @patch("planq.contrib.django.middleware.close_old_connections")
+    def test_both_hooks_call_close_twice_total(
+        self,
+        mock_close: MagicMock,
+        middleware: DjangoDbMiddleware,
+        ctx: PlanqContext,
+    ) -> None:
+        middleware.before_execute(ctx)
+        middleware.after_execute(ctx)
         assert mock_close.call_count == 2
-        call_next.assert_called_once_with(mock_message)
 
-    @pytest.mark.asyncio
-    @patch("planq.contrib.django.middleware.close_old_connections")
-    async def test_calls_close_on_exception(
-        self,
-        mock_close: MagicMock,
-        middleware: DjangoDbMiddleware,
-        mock_message: MagicMock,
+    def test_does_not_override_call(
+        self, middleware: DjangoDbMiddleware
     ) -> None:
-        call_next = AsyncMock(side_effect=ValueError("boom"))
-        with pytest.raises(ValueError, match="boom"):
-            await middleware(mock_message, call_next)
+        """DjangoDbMiddleware uses default __call__ (pass-through)."""
+        assert type(middleware).__call__ is Middleware.__call__
 
-        assert mock_close.call_count == 2
-
-    @pytest.mark.asyncio
-    @patch("planq.contrib.django.middleware.close_old_connections")
-    async def test_returns_call_next_result(
-        self,
-        mock_close: MagicMock,
-        middleware: DjangoDbMiddleware,
-        mock_message: MagicMock,
-    ) -> None:
-        expected = MagicMock()
-        call_next = AsyncMock(return_value=expected)
-        result = await middleware(mock_message, call_next)
-        assert result is expected
+    def test_hooks_are_sync(self, middleware: DjangoDbMiddleware) -> None:
+        """Hooks are sync methods, not coroutines."""
+        assert not inspect.iscoroutinefunction(middleware.before_execute)
+        assert not inspect.iscoroutinefunction(middleware.after_execute)

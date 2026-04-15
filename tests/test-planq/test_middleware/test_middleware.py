@@ -508,3 +508,117 @@ class TestMiddlewarePropertyBased:
         if params is not None and isinstance(params, dict):
             assert mock_msg.body.params["injected"] == "value"
         assert mock_msg.headers["x-custom"] == "middleware"
+
+
+# === Layer 9: Execution Hooks ===
+
+
+class TestMiddlewareExecutionHooks:
+    """Test before_execute / after_execute hook methods."""
+
+    def test_base_middleware_has_before_execute(self):
+        """Middleware has before_execute method."""
+        middleware = Middleware()
+        assert hasattr(middleware, "before_execute")
+        assert callable(middleware.before_execute)
+
+    def test_base_middleware_has_after_execute(self):
+        """Middleware has after_execute method."""
+        middleware = Middleware()
+        assert hasattr(middleware, "after_execute")
+        assert callable(middleware.after_execute)
+
+    def test_before_execute_is_sync(self):
+        """before_execute is a regular (non-async) method."""
+        assert not inspect.iscoroutinefunction(Middleware.before_execute)
+
+    def test_after_execute_is_sync(self):
+        """after_execute is a regular (non-async) method."""
+        assert not inspect.iscoroutinefunction(Middleware.after_execute)
+
+    def test_before_execute_accepts_planq_context(self):
+        """before_execute signature accepts ctx parameter."""
+        sig = inspect.signature(Middleware.before_execute)
+        params = list(sig.parameters.keys())
+        assert params == ["self", "ctx"]
+
+    def test_after_execute_accepts_planq_context(self):
+        """after_execute signature accepts ctx parameter."""
+        sig = inspect.signature(Middleware.after_execute)
+        params = list(sig.parameters.keys())
+        assert params == ["self", "ctx"]
+
+    def test_before_execute_default_is_noop(self):
+        """Default before_execute does nothing and returns None."""
+        from planq.context import PlanqContext
+
+        middleware = Middleware()
+        ctx = PlanqContext()
+        result = middleware.before_execute(ctx)
+        assert result is None
+
+    def test_after_execute_default_is_noop(self):
+        """Default after_execute does nothing and returns None."""
+        from planq.context import PlanqContext
+
+        middleware = Middleware()
+        ctx = PlanqContext()
+        result = middleware.after_execute(ctx)
+        assert result is None
+
+    def test_subclass_can_override_before_execute(self):
+        """Subclass can override before_execute."""
+        from planq.context import PlanqContext
+
+        class SetupMiddleware(Middleware):
+            def __init__(self):
+                self.setup_called = False
+
+            def before_execute(self, ctx):
+                self.setup_called = True
+
+        mw = SetupMiddleware()
+        mw.before_execute(PlanqContext())
+        assert mw.setup_called is True
+
+    def test_subclass_can_override_after_execute(self):
+        """Subclass can override after_execute."""
+        from planq.context import PlanqContext
+
+        class TeardownMiddleware(Middleware):
+            def __init__(self):
+                self.teardown_called = False
+
+            def after_execute(self, ctx):
+                self.teardown_called = True
+
+        mw = TeardownMiddleware()
+        mw.after_execute(PlanqContext())
+        assert mw.teardown_called is True
+
+    def test_hooks_do_not_affect_call_behavior(self):
+        """Overriding hooks doesn't change __call__ default behavior."""
+
+        class HookMiddleware(Middleware):
+            def before_execute(self, ctx):
+                pass
+
+            def after_execute(self, ctx):
+                pass
+
+        mw = HookMiddleware()
+        assert inspect.iscoroutinefunction(mw.__call__)
+
+
+class TestMiddlewareExecutionHooksDocumentation:
+    """Test that execution hook methods have proper documentation."""
+
+    def test_before_execute_has_docstring(self):
+        """before_execute has docstring."""
+        assert Middleware.before_execute.__doc__ is not None
+        assert len(Middleware.before_execute.__doc__) > 0
+
+    def test_after_execute_has_docstring(self):
+        """after_execute has docstring."""
+        assert Middleware.after_execute.__doc__ is not None
+        assert len(Middleware.after_execute.__doc__) > 0

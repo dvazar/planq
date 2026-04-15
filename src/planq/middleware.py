@@ -19,6 +19,7 @@ from planq.models import JsonRpcErrorDetail, JsonRpcResponse
 if TYPE_CHECKING:
     from collections.abc import Awaitable
 
+    from planq.context import PlanqContext
     from planq.message import BrokerMessage
     from planq.types import Seconds
 
@@ -54,6 +55,39 @@ class Middleware:
             (for notifications or skipped messages).
         """
         return await call_next(msg)
+
+    def before_execute(self, ctx: PlanqContext) -> None:
+        """Called in the handler's execution context before the handler.
+
+        Runs in the same thread/context as the handler itself:
+
+        - **ASYNC** mode: event loop thread (same as ``__call__``).
+        - **THREAD** mode: worker thread (via ``asyncio.to_thread``).
+        - **PROCESS** mode: not called (separate process boundary).
+
+        Override in subclasses to set up thread-local resources
+        (e.g. database connections) that must live in the handler's
+        thread. The default implementation is a no-op.
+
+        Args:
+            ctx: The execution context for the current handler
+                invocation.
+        """
+
+    def after_execute(self, ctx: PlanqContext) -> None:
+        """Called in the handler's execution context after the handler.
+
+        Same threading rules as :meth:`before_execute`. Called even
+        if the handler raised an exception, analogous to a ``finally``
+        block.
+
+        Override in subclasses to tear down thread-local resources.
+        The default implementation is a no-op.
+
+        Args:
+            ctx: The execution context for the current handler
+                invocation.
+        """
 
 
 class DeadlineMiddleware(Middleware):

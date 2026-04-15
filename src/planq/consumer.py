@@ -20,7 +20,7 @@ from typing import (
 )
 
 from planq.backoff import full_jitter
-from planq.context import get_planq_context
+from planq.context import PlanqContext, get_planq_context
 from planq.enums import ExecutionMode, Header, JsonRpcError, LogEvent
 from planq.exceptions import (
     FeatureNotSupportedError,
@@ -402,6 +402,20 @@ class PlanqConsumer:
             return self._settings.max_retries
         return DEFAULT_MAX_RETRIES
 
+    def _run_before_execute_hooks(self, ctx: PlanqContext) -> None:
+        for mw in self._middlewares:
+            mw.before_execute(ctx)
+
+    def _run_after_execute_hooks(self, ctx: PlanqContext) -> None:
+        for mw in reversed(self._middlewares):
+            try:
+                mw.after_execute(ctx)
+            except Exception:
+                logger.exception(
+                    "after_execute failed for %s",
+                    type(mw).__qualname__,
+                )
+
     async def _execute_async(
         self,
         handler: Callable[..., Any],
@@ -409,13 +423,18 @@ class PlanqConsumer:
         kwargs: dict[str, Any],
         time_limit: float | None,
     ) -> Any:
-        if time_limit is None:
-            return await handler(*args, **kwargs)
+        ctx = get_planq_context()
         try:
-            async with asyncio.timeout(time_limit):
+            self._run_before_execute_hooks(ctx)
+            if time_limit is None:
                 return await handler(*args, **kwargs)
-        except TimeoutError as e:
-            raise HandlerTimeout(time_limit) from e
+            try:
+                async with asyncio.timeout(time_limit):
+                    return await handler(*args, **kwargs)
+            except TimeoutError as e:
+                raise HandlerTimeout(time_limit) from e
+        finally:
+            self._run_after_execute_hooks(ctx)
 
     async def _execute_thread(
         self,
@@ -424,15 +443,23 @@ class PlanqConsumer:
         kwargs: dict[str, Any],
         time_limit: float | None,
     ) -> Any:
-        if time_limit is None:
-            return await asyncio.to_thread(handler, *args, **kwargs)
+        ctx = get_planq_context()
 
-        task_ctx = get_planq_context()
+        def _run_with_hooks() -> Any:
+            try:
+                self._run_before_execute_hooks(ctx)
+                return handler(*args, **kwargs)
+            finally:
+                self._run_after_execute_hooks(ctx)
+
+        if time_limit is None:
+            return await asyncio.to_thread(_run_with_hooks)
+
         try:
             async with asyncio.timeout(time_limit):
-                return await asyncio.to_thread(handler, *args, **kwargs)
+                return await asyncio.to_thread(_run_with_hooks)
         except TimeoutError as e:
-            task_ctx.cancel()
+            ctx.cancel()
             raise HandlerTimeout(time_limit) from e
 
     async def _execute_process(
