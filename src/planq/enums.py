@@ -75,6 +75,9 @@ class LogEvent(StrEnum):
     REJECT_CALLBACK_ERROR = "reject_callback_error"
     """An on_reject callback raised an exception."""
 
+    HEARTBEAT_CALLBACK_ERROR = "heartbeat_callback_error"
+    """An on_heartbeat callback raised an exception."""
+
     HANDLER_RETRYING = "handler_retrying"
     """Handler failed but retries remain; message will be requeued."""
 

@@ -34,6 +34,21 @@ class Command(BaseCommand):
             default=None,
             help="Number of process pool workers.",
         )
+        parser.add_argument(
+            "--heartbeat-file",
+            type=str,
+            default=None,
+            help=(
+                "Path to a liveness heartbeat file the worker updates "
+                "periodically (for supervisors like systemd, draug, k8s)."
+            ),
+        )
+        parser.add_argument(
+            "--heartbeat-interval",
+            type=float,
+            default=None,
+            help="Heartbeat update period in seconds (default: 10.0).",
+        )
 
     def handle(self, *args: object, **options: object) -> None:
         from planq.contrib.django.setup import (
@@ -45,8 +60,12 @@ class Command(BaseCommand):
         queues: list[str] = options["queues"]  # type: ignore[assignment]
         concurrency: int | None = options["concurrency"]  # type: ignore[assignment]
         process_workers: int | None = options["process_workers"]  # type: ignore[assignment]
+        heartbeat_file: str | None = options["heartbeat_file"]  # type: ignore[assignment]
+        heartbeat_interval: float | None = options["heartbeat_interval"]  # type: ignore[assignment]
 
-        consumer_config = self._build_consumer_settings(concurrency)
+        consumer_config = self._build_consumer_settings(
+            concurrency, heartbeat_file, heartbeat_interval
+        )
         middlewares = get_planq_middlewares()
 
         consumer = PlanqConsumer(
@@ -59,7 +78,10 @@ class Command(BaseCommand):
         asyncio.run(consumer.run(*queues))
 
     def _build_consumer_settings(
-        self, concurrency_override: int | None
+        self,
+        concurrency_override: int | None,
+        heartbeat_file: str | None = None,
+        heartbeat_interval: float | None = None,
     ) -> ConsumerSettings:
         from django.conf import settings
 
@@ -68,5 +90,9 @@ class Command(BaseCommand):
 
         if concurrency_override is not None:
             consumer_config["concurrency"] = concurrency_override
+        if heartbeat_file is not None:
+            consumer_config["heartbeat_file"] = heartbeat_file
+        if heartbeat_interval is not None:
+            consumer_config["heartbeat_interval"] = heartbeat_interval
 
         return ConsumerSettings(**consumer_config)

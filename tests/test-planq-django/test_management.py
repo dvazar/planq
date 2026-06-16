@@ -105,3 +105,46 @@ class TestPlanqworkerCommand:
         kwargs = mock_consumer_cls.call_args.kwargs
         middlewares = kwargs["middlewares"]
         assert isinstance(middlewares[0], DjangoDbMiddleware)
+
+    @patch("planq.contrib.django.management.commands.planqworker.asyncio")
+    @patch("planq.contrib.django.management.commands.planqworker.PlanqConsumer")
+    def test_heartbeat_file_passed_to_settings(
+        self,
+        mock_consumer_cls: MagicMock,
+        mock_asyncio: MagicMock,
+    ) -> None:
+        consumer_instance = MagicMock()
+        mock_consumer_cls.return_value = consumer_instance
+
+        call_command("planqworker", "default", "--heartbeat-file", "/tmp/hb")
+        kwargs = mock_consumer_cls.call_args.kwargs
+        assert kwargs["settings"].heartbeat_file == "/tmp/hb"
+
+    @patch("planq.contrib.django.management.commands.planqworker.asyncio")
+    @patch("planq.contrib.django.management.commands.planqworker.PlanqConsumer")
+    def test_heartbeat_interval_passed_to_settings(
+        self,
+        mock_consumer_cls: MagicMock,
+        mock_asyncio: MagicMock,
+    ) -> None:
+        consumer_instance = MagicMock()
+        mock_consumer_cls.return_value = consumer_instance
+
+        call_command("planqworker", "default", "--heartbeat-interval", "5")
+        kwargs = mock_consumer_cls.call_args.kwargs
+        assert kwargs["settings"].heartbeat_interval == 5.0
+
+    @patch("planq.contrib.django.management.commands.planqworker.asyncio")
+    @patch("planq.contrib.django.management.commands.planqworker.PlanqConsumer")
+    def test_heartbeat_defaults_when_not_passed(
+        self,
+        mock_consumer_cls: MagicMock,
+        mock_asyncio: MagicMock,
+    ) -> None:
+        consumer_instance = MagicMock()
+        mock_consumer_cls.return_value = consumer_instance
+
+        call_command("planqworker", "default")
+        kwargs = mock_consumer_cls.call_args.kwargs
+        assert kwargs["settings"].heartbeat_file is None
+        assert kwargs["settings"].heartbeat_interval == 10.0

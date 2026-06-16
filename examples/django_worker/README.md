@@ -50,6 +50,18 @@ uvicorn config.asgi:application --reload
 python manage.py planqworker images --concurrency 10
 ```
 
+> **Liveness heartbeat (optional).** Pass `--heartbeat-file PATH` to have the
+> worker update that file's mtime every `--heartbeat-interval` seconds
+> (default 10s). A process supervisor (systemd `WatchdogSec`, draug, a k8s
+> file-based liveness probe) can then restart a wedged worker:
+>
+> ```bash
+> python manage.py planqworker images --heartbeat-file /tmp/worker.heartbeat
+> ```
+>
+> For a non-file signal (e.g. systemd `sd_notify`, a metrics push), register a
+> callback with the `@consumer.on_heartbeat()` decorator instead.
+
 **Step 5: submit a resize job (terminal 3)**
 
 ```bash

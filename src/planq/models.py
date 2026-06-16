@@ -55,6 +55,16 @@ class ConsumerSettings(BaseModel):
     # Must be > 0.
     process_timeout_grace_period: float = 5.0
 
+    # Path to a liveness heartbeat file. When set, the consumer periodically
+    # updates the file's mtime (every ``heartbeat_interval`` seconds) so an
+    # external supervisor (systemd WatchdogSec, draug, k8s file-liveness) can
+    # detect a wedged worker. None disables the built-in file heartbeat.
+    heartbeat_file: str | None = None
+
+    # Heartbeat tick period in seconds. Drives both the built-in file
+    # heartbeat and any on_heartbeat callbacks. Must be > 0.
+    heartbeat_interval: float = 10.0
+
     # Global dataclass parser: (dataclass_type, raw_dict) -> instance.
     # Used by DataclassResolver when no from_dict classmethod exists.
     dataclass_parser: Annotated[
@@ -86,6 +96,7 @@ class ConsumerSettings(BaseModel):
         "retry_base_delay",
         "retry_max_delay",
         "process_timeout_grace_period",
+        "heartbeat_interval",
     )
     @classmethod
     def validate_positive_float(cls, v: float, info: ValidationInfo) -> float:
@@ -96,6 +107,14 @@ class ConsumerSettings(BaseModel):
             raise ValueError(f"{info.field_name} cannot be infinite")
         if v <= 0:
             raise ValueError(f"{info.field_name} must be positive")
+        return v
+
+    @field_validator("heartbeat_file")
+    @classmethod
+    def validate_heartbeat_file(cls, v: str | None) -> str | None:
+        """Ensure heartbeat_file is a non-empty path when set."""
+        if v is not None and not v.strip():
+            raise ValueError("heartbeat_file must not be empty")
         return v
 
 
