@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import multiprocessing
 import os
 import signal
@@ -12,6 +13,7 @@ import time
 import uuid
 from concurrent.futures import Future, ProcessPoolExecutor
 from functools import partial
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -311,6 +313,7 @@ class PlanqConsumer:
         self._params_converter = ParamsConverter()
         self._build_pipeline()
         self._reject_callbacks = []
+        self._heartbeat_callbacks: list[Callable[[], Any]] = []
         self._install_signal_handlers = install_signal_handlers
         self._shutdown_event: asyncio.Event = asyncio.Event()
 
@@ -379,6 +382,95 @@ class PlanqConsumer:
                     exc_info=result,
                     extra=log_ctx,
                 )
+
+    def on_heartbeat(
+        self,
+    ) -> Callable[[Callable[[], Any]], Callable[[], Any]]:
+        """Register a callback invoked on each heartbeat tick.
+
+        The decorated function takes no arguments and may be sync or
+        async. Use it to emit a liveness signal that is not file-based
+        (e.g. systemd ``sd_notify``, a metrics push, or a "last seen"
+        database row). For a plain file-mtime heartbeat, set
+        :attr:`ConsumerSettings.heartbeat_file` instead -- no callback
+        needed.
+
+        The heartbeat loop runs while :meth:`run` is active whenever a
+        ``heartbeat_file`` is configured or at least one callback is
+        registered, ticking every
+        :attr:`ConsumerSettings.heartbeat_interval` seconds.
+
+        Returns:
+            A decorator that registers the callback and returns it
+            unchanged.
+        """
+
+        def decorator(
+            func: Callable[[], Any],
+        ) -> Callable[[], Any]:
+            self._heartbeat_callbacks.append(func)
+            return func
+
+        return decorator
+
+    def _heartbeat_enabled(self) -> bool:
+        """Heartbeat runs when a file sink or a callback is configured."""
+        return bool(self._settings.heartbeat_file) or bool(
+            self._heartbeat_callbacks
+        )
+
+    @staticmethod
+    def _write_heartbeat(path: str) -> None:
+        """Create the heartbeat file (and parents) and bump its mtime."""
+        file_path = Path(path)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.touch()
+
+    async def _heartbeat_tick(self) -> None:
+        """Emit one heartbeat: touch the file (if set) and run callbacks.
+
+        Each callback is isolated -- an exception in one is logged and
+        does not prevent the others or future ticks. Callbacks may be
+        sync or async.
+        """
+        if self._settings.heartbeat_file:
+            self._write_heartbeat(self._settings.heartbeat_file)
+
+        for callback in self._heartbeat_callbacks:
+            try:
+                result = callback()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                log_ctx = {
+                    "event": LogEvent.HEARTBEAT_CALLBACK_ERROR,
+                    "callback": callback.__qualname__,
+                }
+                logger.error(
+                    "Heartbeat callback %(callback)r failed",
+                    log_ctx,
+                    exc_info=True,
+                    extra=log_ctx,
+                )
+
+    async def _heartbeat_loop(self) -> None:
+        """Emit heartbeats until shutdown.
+
+        Ticks immediately, then every ``heartbeat_interval`` seconds.
+        Races the interval against the shutdown event so :meth:`stop`
+        returns promptly instead of waiting out the interval.
+        """
+        interval = self._settings.heartbeat_interval
+        await self._heartbeat_tick()
+        while not self._shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(), timeout=interval
+                )
+            except TimeoutError:
+                await self._heartbeat_tick()
+            else:
+                break
 
     def _calculate_backoff(self, delivery_count: int) -> Seconds:
         # Full Jitter Backoff Strategy
@@ -900,6 +992,11 @@ class PlanqConsumer:
                                 self._shutdown_event,
                                 tg,
                             )
+                        )
+                    if self._heartbeat_enabled():
+                        tg.create_task(
+                            self._heartbeat_loop(),
+                            name="planq-heartbeat",
                         )
         finally:
             if self._pool is not None:

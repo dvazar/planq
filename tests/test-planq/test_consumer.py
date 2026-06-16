@@ -2737,3 +2737,277 @@ class TestRunMany:
         consumer.run = mock_run_many
         await consumer.run("myqueue")
         assert called_with == ("myqueue",)
+
+
+# === Layer 4.6: Heartbeat ===
+
+
+class TestHeartbeatCallbacks:
+    """Tests for on_heartbeat() registration."""
+
+    @pytest.mark.asyncio
+    async def test_on_heartbeat_registers_callback(self):
+        """on_heartbeat decorator appends the callback."""
+        consumer = PlanqConsumer(Planq(broker=MagicMock()), middlewares=[])
+
+        @consumer.on_heartbeat()
+        def cb() -> None:
+            pass
+
+        assert cb in consumer._heartbeat_callbacks
+
+    @pytest.mark.asyncio
+    async def test_on_heartbeat_returns_function_unchanged(self):
+        """Decorator returns the original function unchanged."""
+        consumer = PlanqConsumer(Planq(broker=MagicMock()), middlewares=[])
+
+        def original() -> None:
+            pass
+
+        assert consumer.on_heartbeat()(original) is original
+
+    @pytest.mark.asyncio
+    async def test_on_heartbeat_multiple_callbacks_preserve_order(self):
+        """Multiple callbacks register in order."""
+        consumer = PlanqConsumer(Planq(broker=MagicMock()), middlewares=[])
+
+        @consumer.on_heartbeat()
+        def one() -> None:
+            pass
+
+        @consumer.on_heartbeat()
+        def two() -> None:
+            pass
+
+        assert consumer._heartbeat_callbacks == [one, two]
+
+
+class TestHeartbeatTick:
+    """Tests for _heartbeat_tick(): file touch + callback invocation."""
+
+    @pytest.mark.asyncio
+    async def test_tick_touches_file_and_creates_parent(self, tmp_path):
+        """A tick creates the heartbeat file and any missing parent dirs."""
+        hb = tmp_path / "nested" / "planq.heartbeat"
+        consumer = PlanqConsumer(
+            Planq(broker=MagicMock()),
+            settings=ConsumerSettings(heartbeat_file=str(hb)),
+            middlewares=[],
+        )
+
+        await consumer._heartbeat_tick()
+
+        assert hb.exists()
+
+    @pytest.mark.asyncio
+    async def test_tick_invokes_sync_and_async_callbacks(self):
+        """Both sync and async callbacks are invoked on a tick."""
+        consumer = PlanqConsumer(Planq(broker=MagicMock()), middlewares=[])
+        calls: list[str] = []
+
+        @consumer.on_heartbeat()
+        def sync_cb() -> None:
+            calls.append("sync")
+
+        @consumer.on_heartbeat()
+        async def async_cb() -> None:
+            calls.append("async")
+
+        await consumer._heartbeat_tick()
+
+        assert calls == ["sync", "async"]
+
+    @pytest.mark.asyncio
+    async def test_tick_isolates_failing_callback(self):
+        """A failing callback is logged and does not stop the others."""
+        consumer = PlanqConsumer(Planq(broker=MagicMock()), middlewares=[])
+        survived: list[int] = []
+
+        @consumer.on_heartbeat()
+        def boom() -> None:
+            raise RuntimeError("heartbeat boom")
+
+        @consumer.on_heartbeat()
+        def healthy() -> None:
+            survived.append(1)
+
+        with patch("planq.consumer.logger") as mock_logger:
+            await consumer._heartbeat_tick()
+
+        assert survived == [1]  # ran despite the first callback raising
+        mock_logger.error.assert_called_once()
+        assert "failed" in mock_logger.error.call_args[0][0].lower()
+
+    @pytest.mark.asyncio
+    async def test_tick_noop_without_file_or_callbacks(self):
+        """A tick with no file and no callbacks is a harmless no-op."""
+        consumer = PlanqConsumer(Planq(broker=MagicMock()), middlewares=[])
+
+        await consumer._heartbeat_tick()  # must not raise
+
+
+class TestHeartbeatEnabled:
+    """Tests for _heartbeat_enabled(): activation by sink presence."""
+
+    def test_enabled_with_file(self):
+        """A configured heartbeat_file activates the heartbeat."""
+        consumer = PlanqConsumer(
+            Planq(broker=MagicMock()),
+            settings=ConsumerSettings(heartbeat_file="/tmp/hb"),
+            middlewares=[],
+        )
+        assert consumer._heartbeat_enabled() is True
+
+    def test_enabled_with_callback(self):
+        """A registered callback activates the heartbeat."""
+        consumer = PlanqConsumer(Planq(broker=MagicMock()), middlewares=[])
+
+        @consumer.on_heartbeat()
+        def cb() -> None:
+            pass
+
+        assert consumer._heartbeat_enabled() is True
+
+    def test_disabled_without_sink(self):
+        """No file and no callbacks: heartbeat stays disabled."""
+        consumer = PlanqConsumer(Planq(broker=MagicMock()), middlewares=[])
+        assert consumer._heartbeat_enabled() is False
+
+
+class TestHeartbeatLoop:
+    """Tests for _heartbeat_loop(): timing and shutdown behavior."""
+
+    @pytest.mark.asyncio
+    async def test_loop_ticks_immediately(self):
+        """The first tick fires at t=0, not after one interval."""
+        consumer = PlanqConsumer(
+            Planq(broker=MagicMock()),
+            settings=ConsumerSettings(heartbeat_interval=100.0),
+            middlewares=[],
+        )
+        ticked = asyncio.Event()
+
+        @consumer.on_heartbeat()
+        def cb() -> None:
+            ticked.set()
+
+        loop_task = asyncio.create_task(consumer._heartbeat_loop())
+        # Would time out if it waited the full 100s interval.
+        await asyncio.wait_for(ticked.wait(), timeout=2.0)
+
+        await consumer.stop()
+        await asyncio.wait_for(loop_task, timeout=2.0)
+
+    @pytest.mark.asyncio
+    async def test_loop_ticks_repeatedly_then_stops(self):
+        """The loop keeps ticking each interval and stops on shutdown."""
+        consumer = PlanqConsumer(
+            Planq(broker=MagicMock()),
+            settings=ConsumerSettings(heartbeat_interval=0.01),
+            middlewares=[],
+        )
+        count = {"n": 0}
+        two = asyncio.Event()
+
+        @consumer.on_heartbeat()
+        def cb() -> None:
+            count["n"] += 1
+            if count["n"] >= 2:
+                two.set()
+
+        loop_task = asyncio.create_task(consumer._heartbeat_loop())
+        await asyncio.wait_for(two.wait(), timeout=2.0)
+
+        await consumer.stop()
+        await asyncio.wait_for(loop_task, timeout=2.0)
+        assert count["n"] >= 2
+
+    @pytest.mark.asyncio
+    async def test_loop_exits_immediately_when_already_shutdown(self, tmp_path):
+        """If shutdown is already set, the loop ticks once and returns."""
+        hb = tmp_path / "hb"
+        consumer = PlanqConsumer(
+            Planq(broker=MagicMock()),
+            settings=ConsumerSettings(
+                heartbeat_file=str(hb), heartbeat_interval=100.0
+            ),
+            middlewares=[],
+        )
+        consumer._shutdown_event.set()
+
+        # Returns promptly after the single immediate tick (no interval wait).
+        await asyncio.wait_for(consumer._heartbeat_loop(), timeout=2.0)
+        assert hb.exists()  # the t=0 tick happened
+
+
+class TestHeartbeatInRun:
+    """Tests for heartbeat activation inside run()."""
+
+    @pytest.mark.asyncio
+    async def test_run_starts_heartbeat_when_file_set(self, tmp_path):
+        """run() touches the heartbeat file when heartbeat_file is set."""
+        from planq.providers.memory import InMemoryBroker
+
+        hb = tmp_path / "hb"
+        app = Planq(broker=InMemoryBroker())
+        consumer = PlanqConsumer(
+            app,
+            settings=ConsumerSettings(
+                heartbeat_file=str(hb), heartbeat_interval=0.01
+            ),
+            middlewares=[],
+            install_signal_handlers=False,
+        )
+
+        run_task = asyncio.create_task(consumer.run("q"))
+        for _ in range(200):
+            if hb.exists():
+                break
+            await asyncio.sleep(0.01)
+
+        await consumer.stop()
+        await asyncio.wait_for(run_task, timeout=2.0)
+        assert hb.exists()
+
+    @pytest.mark.asyncio
+    async def test_run_starts_heartbeat_when_callback_registered(self):
+        """run() runs the heartbeat loop when a callback is registered."""
+        from planq.providers.memory import InMemoryBroker
+
+        app = Planq(broker=InMemoryBroker())
+        consumer = PlanqConsumer(
+            app,
+            settings=ConsumerSettings(heartbeat_interval=0.01),
+            middlewares=[],
+            install_signal_handlers=False,
+        )
+        ticked = asyncio.Event()
+
+        @consumer.on_heartbeat()
+        def cb() -> None:
+            ticked.set()
+
+        run_task = asyncio.create_task(consumer.run("q"))
+        await asyncio.wait_for(ticked.wait(), timeout=2.0)
+
+        await consumer.stop()
+        await asyncio.wait_for(run_task, timeout=2.0)
+
+    @pytest.mark.asyncio
+    async def test_run_without_heartbeat_stays_disabled(self):
+        """run() does not start a heartbeat loop when no sink is configured."""
+        from planq.providers.memory import InMemoryBroker
+
+        app = Planq(broker=InMemoryBroker())
+        consumer = PlanqConsumer(
+            app,
+            middlewares=[],
+            install_signal_handlers=False,
+        )
+
+        run_task = asyncio.create_task(consumer.run("q"))
+        await asyncio.sleep(0.05)
+        await consumer.stop()
+        await asyncio.wait_for(run_task, timeout=2.0)
+
+        assert consumer._heartbeat_enabled() is False

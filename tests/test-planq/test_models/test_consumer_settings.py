@@ -390,3 +390,78 @@ class TestConsumerSettingsFuzz:
             settings.process_timeout_grace_period
             == kwargs["process_timeout_grace_period"]
         )
+
+
+class TestConsumerSettingsHeartbeat:
+    """Heartbeat fields: heartbeat_file and heartbeat_interval."""
+
+    def test_heartbeat_defaults(self):
+        """heartbeat_file defaults to None, heartbeat_interval to 10.0."""
+        settings = ConsumerSettings()
+        assert settings.heartbeat_file is None
+        assert settings.heartbeat_interval == 10.0
+
+    def test_heartbeat_file_accepts_path(self):
+        """A non-empty path string is accepted."""
+        settings = ConsumerSettings(heartbeat_file="/tmp/planq.heartbeat")
+        assert settings.heartbeat_file == "/tmp/planq.heartbeat"
+
+    @pytest.mark.parametrize("value", ["", "   ", "\t\n"])
+    def test_heartbeat_file_rejects_empty(self, value):
+        """An empty or whitespace-only heartbeat_file is rejected."""
+        with pytest.raises(ValidationError) as exc_info:
+            ConsumerSettings(heartbeat_file=value)
+
+        errors = exc_info.value.errors()
+        assert len(errors) == 1
+        assert errors[0]["loc"] == ("heartbeat_file",)
+        assert "heartbeat_file must not be empty" in str(errors[0]["msg"])
+
+    def test_heartbeat_file_rejects_non_string(self):
+        """Strict mode: heartbeat_file must be str or None, not int."""
+        with pytest.raises(ValidationError) as exc_info:
+            ConsumerSettings(heartbeat_file=123)
+
+        errors = exc_info.value.errors()
+        assert any(error["loc"] == ("heartbeat_file",) for error in errors)
+
+    def test_heartbeat_interval_accepts_positive(self):
+        """A positive interval is accepted."""
+        settings = ConsumerSettings(heartbeat_interval=2.5)
+        assert settings.heartbeat_interval == 2.5
+
+    def test_heartbeat_interval_rejects_nan(self):
+        """heartbeat_interval rejects NaN."""
+        with pytest.raises(ValidationError) as exc_info:
+            ConsumerSettings(heartbeat_interval=float("nan"))
+
+        errors = exc_info.value.errors()
+        assert errors[0]["loc"] == ("heartbeat_interval",)
+        assert "cannot be NaN" in str(errors[0]["msg"])
+
+    @pytest.mark.parametrize("value", [float("inf"), float("-inf")])
+    def test_heartbeat_interval_rejects_infinity(self, value):
+        """heartbeat_interval rejects positive and negative infinity."""
+        with pytest.raises(ValidationError) as exc_info:
+            ConsumerSettings(heartbeat_interval=value)
+
+        errors = exc_info.value.errors()
+        assert errors[0]["loc"] == ("heartbeat_interval",)
+        assert "cannot be infinite" in str(errors[0]["msg"])
+
+    @pytest.mark.parametrize("value", [0.0, -1.0])
+    def test_heartbeat_interval_rejects_non_positive(self, value):
+        """heartbeat_interval rejects zero and negative values."""
+        with pytest.raises(ValidationError) as exc_info:
+            ConsumerSettings(heartbeat_interval=value)
+
+        errors = exc_info.value.errors()
+        assert errors[0]["loc"] == ("heartbeat_interval",)
+        assert "must be positive" in str(errors[0]["msg"])
+
+    def test_heartbeat_file_is_frozen(self, default_consumer_settings):
+        """Cannot modify heartbeat_file after construction."""
+        with pytest.raises(ValidationError) as exc_info:
+            default_consumer_settings.heartbeat_file = "/tmp/x"
+
+        assert "frozen" in str(exc_info.value).lower()
