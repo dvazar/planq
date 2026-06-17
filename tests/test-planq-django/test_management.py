@@ -148,3 +148,58 @@ class TestPlanqworkerCommand:
         kwargs = mock_consumer_cls.call_args.kwargs
         assert kwargs["settings"].heartbeat_file is None
         assert kwargs["settings"].heartbeat_interval == 10.0
+
+    @patch("planq.contrib.django.management.commands.planqworker.importlib")
+    @patch("planq.contrib.django.management.commands.planqworker.asyncio")
+    @patch("planq.contrib.django.management.commands.planqworker.PlanqConsumer")
+    def test_import_module_imported_before_run(
+        self,
+        mock_consumer_cls: MagicMock,
+        mock_asyncio: MagicMock,
+        mock_importlib: MagicMock,
+    ) -> None:
+        consumer_instance = MagicMock()
+        mock_consumer_cls.return_value = consumer_instance
+
+        call_command("planqworker", "default", "--import-module", "some.module")
+        mock_importlib.import_module.assert_called_once_with("some.module")
+
+    @patch("planq.contrib.django.management.commands.planqworker.importlib")
+    @patch("planq.contrib.django.management.commands.planqworker.asyncio")
+    @patch("planq.contrib.django.management.commands.planqworker.PlanqConsumer")
+    def test_import_module_repeatable(
+        self,
+        mock_consumer_cls: MagicMock,
+        mock_asyncio: MagicMock,
+        mock_importlib: MagicMock,
+    ) -> None:
+        consumer_instance = MagicMock()
+        mock_consumer_cls.return_value = consumer_instance
+
+        call_command(
+            "planqworker",
+            "default",
+            "--import-module",
+            "some.module",
+            "--import-module",
+            "another.module",
+        )
+        assert mock_importlib.import_module.call_count == 2
+        calls = [c.args[0] for c in mock_importlib.import_module.call_args_list]
+        assert "some.module" in calls
+        assert "another.module" in calls
+
+    @patch("planq.contrib.django.management.commands.planqworker.importlib")
+    @patch("planq.contrib.django.management.commands.planqworker.asyncio")
+    @patch("planq.contrib.django.management.commands.planqworker.PlanqConsumer")
+    def test_no_import_module_imports_nothing(
+        self,
+        mock_consumer_cls: MagicMock,
+        mock_asyncio: MagicMock,
+        mock_importlib: MagicMock,
+    ) -> None:
+        consumer_instance = MagicMock()
+        mock_consumer_cls.return_value = consumer_instance
+
+        call_command("planqworker", "default")
+        mock_importlib.import_module.assert_not_called()

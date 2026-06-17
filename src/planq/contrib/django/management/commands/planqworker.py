@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 
 from django.core.management.base import BaseCommand
 
@@ -49,6 +50,17 @@ class Command(BaseCommand):
             default=None,
             help="Heartbeat update period in seconds (default: 10.0).",
         )
+        parser.add_argument(
+            "--import-module",
+            action="append",
+            default=None,
+            dest="import_modules",
+            metavar="DOTTED_PATH",
+            help=(
+                "Import a module before consuming so its task "
+                "handlers are registered. May be repeated."
+            ),
+        )
 
     def handle(self, *args: object, **options: object) -> None:
         from planq.contrib.django.setup import (
@@ -62,6 +74,10 @@ class Command(BaseCommand):
         process_workers: int | None = options["process_workers"]  # type: ignore[assignment]
         heartbeat_file: str | None = options["heartbeat_file"]  # type: ignore[assignment]
         heartbeat_interval: float | None = options["heartbeat_interval"]  # type: ignore[assignment]
+        import_modules: list[str] | None = options["import_modules"]  # type: ignore[assignment]
+
+        for module_path in import_modules or ():
+            importlib.import_module(module_path)
 
         consumer_config = self._build_consumer_settings(
             concurrency, heartbeat_file, heartbeat_interval
