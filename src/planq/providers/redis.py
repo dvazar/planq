@@ -26,6 +26,7 @@ from planq.enums import Header, LogEvent
 from planq.log import get_planq_logger
 from planq.message import BrokerMessage
 from planq.models import JsonRpcRequest, JsonRpcResponse
+from planq.stats import QueueStats
 from planq.types import Seconds
 
 if TYPE_CHECKING:
@@ -546,9 +547,7 @@ class RedisBroker(BaseBroker):
                 max_connections=self._max_connections,
             )
             if self._consumer is not None:
-                self._migrate_script = self._client.register_script(
-                    MIGRATE_LUA
-                )
+                self._migrate_script = self._client.register_script(MIGRATE_LUA)
                 self._scheduler_task = asyncio.create_task(
                     self._run_scheduler()
                 )
@@ -1012,6 +1011,86 @@ class RedisBroker(BaseBroker):
             entry_id=entry_id,
             pel_delivery_count=pel_delivery_count,
         )
+
+    @override
+    async def get_queue_depth(self, queue: str) -> QueueStats:
+        """Return backlog, in-flight, and scheduled counts for *queue*.
+
+        Mirrors SQS semantics using consumer-group state, so it is
+        independent of stream length (acked-but-undeleted entries do not
+        inflate it):
+
+        - ``pending``   = consumer group ``lag`` (entries not yet
+          delivered to any consumer = backlog).
+        - ``in_flight`` = consumer group ``pending`` = PEL size
+          (delivered but not yet acknowledged).
+        - ``scheduled`` = entries in the delayed ZSET.
+
+        Fallbacks: no consumer group yet (cold start, before any worker
+        has run) -> ``pending = XLEN``, ``in_flight = 0``; missing stream
+        -> all zero; ``NULL`` lag -> ``pending = XLEN``. Read-only and
+        safe from a producer connection (``XINFO GROUPS`` needs no group
+        name and creates nothing).
+        """
+        if self._client is None:
+            await self.connect()
+        assert self._client is not None
+
+        stream_key = self.get_queue_name(queue)
+        delayed_key = f"{stream_key}{_DELAYED_SUFFIX}"
+        scheduled = int(await self._client.zcard(delayed_key))
+
+        try:
+            groups = await self._client.xinfo_groups(stream_key)
+        except ResponseError:
+            # Stream does not exist yet -> nothing anywhere.
+            return QueueStats(
+                queue=stream_key, pending=0, scheduled=scheduled, in_flight=0
+            )
+
+        if not groups:
+            # Stream exists but no consumer group yet (no worker has run):
+            # every entry is still undelivered.
+            pending = int(await self._client.xlen(stream_key))
+            return QueueStats(
+                queue=stream_key,
+                pending=pending,
+                scheduled=scheduled,
+                in_flight=0,
+            )
+
+        info = self._select_group(groups)
+        lag = info.get("lag")  # may be None
+        in_flight = int(info.get("pending", 0) or 0)
+        if lag is None:
+            pending = int(await self._client.xlen(stream_key))
+        else:
+            pending = int(lag)
+
+        return QueueStats(
+            queue=stream_key,
+            pending=pending,
+            scheduled=scheduled,
+            in_flight=in_flight,
+        )
+
+    def _select_group(self, groups: list[dict]) -> dict:  # type: ignore[type-arg]
+        """Pick the relevant consumer group from XINFO GROUPS output.
+
+        PlanQ uses a single consumer group per stream. Prefer the
+        configured group name when this broker knows it (consumer mode);
+        otherwise fall back to the sole/first group (producer mode, where
+        the group name is not carried on the broker but the group still
+        appears in XINFO GROUPS).
+        """
+        if self._consumer is not None:
+            name = self._consumer.group_name
+            for g in groups:
+                if g.get("name") == name:
+                    return g
+        # Producer mode, or the configured group is absent (should not
+        # happen under the single-group invariant): use the sole group.
+        return groups[0]
 
     async def _get_pel_counts(
         self, queue: str, entry_ids: list[str]

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Coroutine
 
     from planq.broker import BaseBroker
+    from planq.stats import QueueStats
     from planq.types import RetryCondition, Seconds
 
 P = ParamSpec("P")
@@ -337,6 +338,21 @@ class Planq:
 
         return decorator
 
+    async def get_queue_depth(self, queue: str) -> QueueStats:
+        """Return a point-in-time depth breakdown for ``queue``.
+
+        Connects the broker lazily (idempotent) so this is safe to
+        call even if no message has been published yet.
+
+        Args:
+            queue: Logical queue name.
+
+        Returns:
+            A :class:`~planq.stats.QueueStats` snapshot.
+        """
+        await self.broker.connect()
+        return await self.broker.get_queue_depth(queue)
+
     #: Alias for :meth:`task` — semantic name for message handlers.
     handler = task
     #: Alias for :meth:`task` — semantic name for RPC-style handlers.
@@ -462,6 +478,26 @@ class SyncPlanq(Planq):
         Returns:
             The broker-assigned message ID or ``"eager"``.
         """
+        if self.eager:
+            return asyncio.run(coro)
+        self._ensure_loop()
+        return self._run_sync(coro)
+
+    def get_queue_depth(  # type: ignore[override]
+        self, queue: str
+    ) -> QueueStats:
+        """Return a point-in-time depth breakdown for ``queue``.
+
+        Runs the async coroutine on the background loop (starting it
+        lazily if needed).  In eager mode, uses ``asyncio.run()``.
+
+        Args:
+            queue: Logical queue name.
+
+        Returns:
+            A :class:`~planq.stats.QueueStats` snapshot.
+        """
+        coro = super().get_queue_depth(queue)
         if self.eager:
             return asyncio.run(coro)
         self._ensure_loop()

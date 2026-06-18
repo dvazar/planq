@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from io import StringIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -203,3 +204,91 @@ class TestPlanqworkerCommand:
 
         call_command("planqworker", "default")
         mock_importlib.import_module.assert_not_called()
+
+
+# === TestPlanqstatsCommand ===
+
+
+class TestPlanqstatsCommand:
+    """Tests for the planqstats management command."""
+
+    def test_planqstats_explicit_queue_json(self, monkeypatch):
+        """Explicit queue name + --json outputs correct JSON."""
+        import json
+
+        import planq.contrib.django.setup as setup
+        from planq.stats import QueueStats
+
+        class FakeApp:
+            routes = {}
+
+            def get_queue_depth(self, queue):
+                return QueueStats(
+                    queue=queue, pending=4, scheduled=1, in_flight=0
+                )
+
+        monkeypatch.setattr(setup, "get_planq_app", lambda: FakeApp())
+        out = StringIO()
+        call_command("planqstats", "default", "--json", stdout=out)
+        payload = json.loads(out.getvalue())
+        assert payload == [
+            {
+                "queue": "default",
+                "pending": 4,
+                "scheduled": 1,
+                "in_flight": 0,
+                "total": 5,
+            }
+        ]
+
+    def test_planqstats_no_args_uses_routes(self, monkeypatch):
+        """No queue args — uses unique queue names from app.routes."""
+        import json
+        from dataclasses import dataclass
+
+        import planq.contrib.django.setup as setup
+        from planq.stats import QueueStats
+
+        @dataclass
+        class Route:
+            queue_name: str
+
+        class FakeApp:
+            routes = {
+                "a": Route("default"),
+                "b": Route("imports"),
+                "c": Route("default"),
+            }
+
+            def get_queue_depth(self, queue):
+                return QueueStats(
+                    queue=queue, pending=0, scheduled=0, in_flight=0
+                )
+
+        monkeypatch.setattr(setup, "get_planq_app", lambda: FakeApp())
+        out = StringIO()
+        call_command("planqstats", "--json", stdout=out)
+        queues = sorted(row["queue"] for row in json.loads(out.getvalue()))
+        assert queues == ["default", "imports"]  # deduped, sorted
+
+    def test_planqstats_table_output(self, monkeypatch):
+        """Without --json, emit a human-readable line per queue."""
+        import planq.contrib.django.setup as setup
+        from planq.stats import QueueStats
+
+        class FakeApp:
+            routes = {}
+
+            def get_queue_depth(self, queue):
+                return QueueStats(
+                    queue=queue, pending=4, scheduled=1, in_flight=2
+                )
+
+        monkeypatch.setattr(setup, "get_planq_app", lambda: FakeApp())
+        out = StringIO()
+        call_command("planqstats", "default", stdout=out)
+        text = out.getvalue()
+        assert "default" in text
+        assert "pending=4" in text
+        assert "in_flight=2" in text
+        assert "total=7" in text
