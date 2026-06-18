@@ -1,6 +1,6 @@
 [project]
 name = "PlanQ"
-version = "0.1.7"
+version = "0.1.8"
 description = "Transport-agnostic async task queue using JSON-RPC 2.0"
 requires-python = ">=3.12"
 dependencies = [
