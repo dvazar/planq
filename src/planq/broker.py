@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Final
 
 from planq.enums import LogEvent
 from planq.log import get_planq_logger
+from planq.stats import QueueStats
 
 if TYPE_CHECKING:
     from planq.message import BrokerMessage
@@ -135,6 +136,23 @@ class BaseBroker:
         """
         raise NotImplementedError
         yield  # noqa: RET503 — make this a generator
+
+    async def get_queue_depth(self, queue: str) -> QueueStats:
+        """Return a point-in-time depth breakdown for ``queue``.
+
+        Read-only; safe to call from a producer-only connection. Must not
+        create consumer groups or mutate queue state.
+
+        Args:
+            queue: Queue name or URL to inspect.
+
+        Returns:
+            A :class:`~planq.stats.QueueStats` snapshot.
+
+        Raises:
+            NotImplementedError: Must be overridden by subclasses.
+        """
+        raise NotImplementedError
 
     async def on_poison_message(
         self,

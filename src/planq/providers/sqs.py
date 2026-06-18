@@ -15,6 +15,7 @@ from planq.enums import Header, LogEvent
 from planq.log import get_planq_logger
 from planq.message import BrokerMessage
 from planq.models import JsonRpcRequest, JsonRpcResponse
+from planq.stats import QueueStats
 from planq.types import Headers
 
 if TYPE_CHECKING:
@@ -271,6 +272,44 @@ class SqsBroker(BaseBroker):
 
         resp = await self._client.send_message(**kwargs)
         return resp["MessageId"]
+
+    _DEPTH_ATTRS: Final[tuple[str, ...]] = (
+        "ApproximateNumberOfMessages",
+        "ApproximateNumberOfMessagesDelayed",
+        "ApproximateNumberOfMessagesNotVisible",
+    )
+
+    @override
+    async def get_queue_depth(self, queue: str) -> QueueStats:
+        """Return pending, scheduled, and in-flight counts for *queue*.
+
+        ``pending`` = ``ApproximateNumberOfMessages`` (visible, ready).
+        ``scheduled`` = ``ApproximateNumberOfMessagesDelayed``.
+        ``in_flight`` = ``ApproximateNumberOfMessagesNotVisible``
+        (received but not yet deleted or returned to the queue).
+
+        All SQS counts are approximate; they may lag by a few seconds.
+
+        Args:
+            queue: SQS queue URL — passed directly to the API (same as
+                the ``queue`` argument used by :meth:`publish`).
+
+        Returns:
+            A frozen :class:`~planq.stats.QueueStats` snapshot.
+        """
+        resp = await self._client.get_queue_attributes(
+            QueueUrl=queue,
+            AttributeNames=self._DEPTH_ATTRS,
+        )
+        attrs = resp.get("Attributes", {})
+        return QueueStats(
+            queue=queue,
+            pending=int(attrs.get("ApproximateNumberOfMessages", 0)),
+            scheduled=int(attrs.get("ApproximateNumberOfMessagesDelayed", 0)),
+            in_flight=int(
+                attrs.get("ApproximateNumberOfMessagesNotVisible", 0)
+            ),
+        )
 
     @override
     async def consume(

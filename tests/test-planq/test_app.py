@@ -1168,3 +1168,59 @@ class TestSyncPlanqEager:
         broker = _make_broker()
         app = SyncPlanq(broker, eager=True)
         app.close()  # should not raise
+
+
+# === TestGetQueueDepth ===
+
+
+class TestGetQueueDepth:
+    """Tests for Planq.get_queue_depth and SyncPlanq.get_queue_depth."""
+
+    @pytest.mark.asyncio
+    async def test_async_app_get_queue_depth_delegates_to_broker(self):
+        """Async Planq.get_queue_depth returns QueueStats from the broker."""
+        from planq.models import JsonRpcRequest
+        from planq.providers.memory import InMemoryBroker
+        from planq.stats import QueueStats
+
+        app = Planq(broker=InMemoryBroker("memory://"))
+        await app.broker.connect()
+        await app.broker.publish(
+            "default",
+            JsonRpcRequest(
+                jsonrpc="2.0", method="noop", params=None, id=None
+            ),
+        )
+        stats = await app.get_queue_depth("default")
+        assert isinstance(stats, QueueStats)
+        assert stats.pending == 1
+
+    def test_sync_app_get_queue_depth_returns_stats(self):
+        """SyncPlanq.get_queue_depth bridges to the background loop.
+
+        Uses a real enqueue (task.send) to put one message on the
+        queue before reading depth.
+        """
+        from planq.providers.memory import InMemoryBroker
+        from planq.stats import QueueStats
+
+        app = SyncPlanq(broker=InMemoryBroker("memory://"))
+        with app:
+
+            @app.task("depth.noop", queue_name="default")
+            def noop_task() -> None: ...
+
+            noop_task.send()
+            stats = app.get_queue_depth("default")
+        assert isinstance(stats, QueueStats)
+        assert stats.pending == 1
+
+    def test_sync_eager_get_queue_depth_uses_asyncio_run(self):
+        """In eager mode, get_queue_depth runs the coro via asyncio.run."""
+        from planq.providers.memory import InMemoryBroker
+        from planq.stats import QueueStats
+
+        app = SyncPlanq(broker=InMemoryBroker("memory://"), eager=True)
+        stats = app.get_queue_depth("default")
+        assert isinstance(stats, QueueStats)
+        assert stats.pending == 0

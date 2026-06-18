@@ -16,6 +16,7 @@ from planq.broker import BaseBroker
 from planq.enums import Header
 from planq.message import BrokerMessage
 from planq.models import JsonRpcRequest
+from planq.stats import QueueStats
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -185,6 +186,26 @@ class InMemoryBroker(BaseBroker):
         else:
             await q.put(envelope)
         return message_id
+
+    @override
+    async def get_queue_depth(self, queue: str) -> QueueStats:
+        """Return pending message count for an in-memory queue.
+
+        ``scheduled`` and ``in_flight`` are always 0 for the in-memory
+        broker — it has no delayed-message support and no consumer groups.
+
+        Args:
+            queue: Logical queue name.
+
+        Returns:
+            A :class:`~planq.stats.QueueStats` snapshot.
+        """
+        name = self.get_queue_name(queue)
+        q = self._queues.get(name)
+        pending = q.qsize() if q is not None else 0
+        return QueueStats(
+            queue=name, pending=pending, scheduled=0, in_flight=0
+        )
 
     @override
     async def consume(

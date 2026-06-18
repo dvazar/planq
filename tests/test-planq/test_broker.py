@@ -266,6 +266,14 @@ class TestBaseBrokerAbstractMethods:
         assert type(exc_info.value) is NotImplementedError
 
     @pytest.mark.asyncio
+    async def test_get_queue_depth_not_implemented(self):
+        """BaseBroker.get_queue_depth() raises NotImplementedError."""
+        broker = MinimalBroker("test-dsn")
+
+        with pytest.raises(NotImplementedError):
+            await broker.get_queue_depth("q")
+
+    @pytest.mark.asyncio
     async def test_publish_not_implemented(self, json_rpc_notification):
         """BaseBroker.publish() raises NotImplementedError."""
         broker = MinimalBroker("test-dsn")
