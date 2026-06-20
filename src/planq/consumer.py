@@ -980,6 +980,11 @@ class PlanqConsumer:
             for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(sig, self._shutdown_event.set)
 
+        # Create the heartbeat file up front, before the potentially slow
+        # broker connect below.
+        if self._settings.heartbeat_file:
+            self._write_heartbeat(self._settings.heartbeat_file)
+
         try:
             async with self.broker:
                 async with asyncio.TaskGroup() as tg:

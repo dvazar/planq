@@ -1,11 +1,37 @@
 [project]
 name = "PlanQ"
-version = "0.1.8"
+version = "0.1.9"
 description = "Transport-agnostic async task queue using JSON-RPC 2.0"
+authors = [
+    { name = "Dmitrii Azarenko", email = "1531255+dvazar@users.noreply.github.com" },
+]
+maintainers = [
+    { name = "Dmitrii Azarenko", email = "1531255+dvazar@users.noreply.github.com" },
+]
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
+keywords = ["task", "queue", "messaging", "asyncio", "jsonrpc", "distributed"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Framework :: AsyncIO",
+    "Framework :: Django",
+    "Topic :: System :: Distributed Computing",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 dependencies = [
     "pydantic>=2.0,<3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/dvazar/planq"
+Repository = "https://github.com/dvazar/planq"
+Issues = "https://github.com/dvazar/planq/issues"
 
 [project.optional-dependencies]
 dev = [
