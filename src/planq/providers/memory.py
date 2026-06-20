@@ -203,9 +203,7 @@ class InMemoryBroker(BaseBroker):
         name = self.get_queue_name(queue)
         q = self._queues.get(name)
         pending = q.qsize() if q is not None else 0
-        return QueueStats(
-            queue=name, pending=pending, scheduled=0, in_flight=0
-        )
+        return QueueStats(queue=name, pending=pending, scheduled=0, in_flight=0)
 
     @override
     async def consume(

@@ -531,6 +531,43 @@ class TestSyncPlanq:
         assert broker.publish.call_count == n_threads
         app.close()
 
+    def test_ensure_loop_returns_if_loop_set_after_fast_path(self):
+        """Double-checked-locking under-lock guard.
+
+        If a competing thread sets the loop between the fast-path check and
+        acquiring the init lock, ``_ensure_loop`` must return from inside the
+        lock without starting a second background thread. The real concurrent
+        test above cannot deterministically force that exact interleaving, so
+        here the lock itself sets the loop on entry -- making the second
+        (under-lock) check see it and take the early-return branch.
+        """
+        broker = _make_broker()
+        app = SyncPlanq(broker)
+
+        sentinel = object()
+        real_lock = app._init_lock
+
+        class _RacingLock:
+            def __enter__(self):
+                # The competitor "won": the loop is set the instant we enter
+                # the critical section, so the under-lock check returns early.
+                app._loop = sentinel
+                return real_lock.__enter__()
+
+            def __exit__(self, *exc):
+                return real_lock.__exit__(*exc)
+
+        app._init_lock = _RacingLock()
+
+        assert app._loop is None  # fast path sees None -> proceeds to the lock
+        app._ensure_loop()  # under-lock check is now True -> early return
+
+        assert app._loop is sentinel
+        assert app._thread is None  # no second loop/thread was started
+
+        app._loop = None  # drop the sentinel before cleanup
+        app.close()
+
     def test_close_without_send_is_safe(self):
         """close() on a never-used app does not touch the broker."""
         broker = _make_broker()

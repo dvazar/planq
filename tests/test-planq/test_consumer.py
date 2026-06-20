@@ -2944,6 +2944,57 @@ class TestHeartbeatInRun:
     """Tests for heartbeat activation inside run()."""
 
     @pytest.mark.asyncio
+    async def test_run_touches_heartbeat_before_broker_connect(self, tmp_path):
+        """The heartbeat file exists before the broker connect completes.
+
+        A file-watching supervisor (draug, systemd, k8s) starts its
+        staleness clock at process spawn, but the heartbeat loop only runs
+        inside ``async with self.broker`` -- after connect. A slow connect
+        (TLS, consumer-group creation) could then exceed the supervisor's
+        startup grace while the file is still absent, causing a false
+        restart that kills the worker before it ever consumes. run() must
+        therefore touch the file up front, before connecting. This gates the
+        broker's connect and asserts the file is already present while the
+        connect is still pending -- with a long interval so the heartbeat
+        loop's own first tick cannot be what created it.
+        """
+        from planq.providers.memory import InMemoryBroker
+
+        hb = tmp_path / "hb"
+        connect_gate = asyncio.Event()
+
+        class SlowConnectBroker(InMemoryBroker):
+            async def connect(self) -> None:
+                await connect_gate.wait()  # simulate a slow connect handshake
+                await super().connect()
+
+        app = Planq(broker=SlowConnectBroker())
+        consumer = PlanqConsumer(
+            app,
+            settings=ConsumerSettings(
+                heartbeat_file=str(hb), heartbeat_interval=100.0
+            ),
+            middlewares=[],
+            install_signal_handlers=False,
+        )
+
+        run_task = asyncio.create_task(consumer.run("q"))
+        try:
+            # While connect is gated, the file must already have been written
+            # by the pre-create -- the loop cannot have ticked (it lives inside
+            # the still-blocked broker context, and the interval is 100s).
+            for _ in range(200):
+                if hb.exists():
+                    break
+                await asyncio.sleep(0.01)
+            assert hb.exists(), "heartbeat must exist before broker connect"
+            assert not connect_gate.is_set(), "still pre-connect"
+        finally:
+            connect_gate.set()  # let connect finish so shutdown is clean
+            await consumer.stop()
+            await asyncio.wait_for(run_task, timeout=2.0)
+
+    @pytest.mark.asyncio
     async def test_run_starts_heartbeat_when_file_set(self, tmp_path):
         """run() touches the heartbeat file when heartbeat_file is set."""
         from planq.providers.memory import InMemoryBroker

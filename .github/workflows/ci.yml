@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv run --extra dev ruff check src
+      - run: uv run --extra dev ruff format --check src
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The integration tests are hard-wired to the docker-compose host ports
+      # (redis on 16379, elasticmq/SQS on 19324), and 100% coverage requires
+      # them to actually run -- so bring the real services up.
+      - name: Start backing services (redis + elasticmq)
+        run: docker compose -f tests/docker-compose.yaml up -d --wait
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Test with coverage
+        run: >-
+          uv run --extra redis --extra sqs --extra django --extra testing
+          pytest --cov=planq --cov-report=xml
+
+      - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          fail_ci_if_error: false
