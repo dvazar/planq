@@ -839,8 +839,15 @@ class TestProcessPoolManagement:
         future, task_id = pool.submit(_quick_process_handler)
         result = future.result(timeout=2.0)
 
-        # Wait for done_callback to execute
-        time.sleep(0.2)
+        # The done-callback that removes the task from _active_pids fires
+        # asynchronously after the future completes, so poll for it instead of
+        # sleeping a fixed amount (a fixed sleep is flaky on a loaded runner).
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            with pool._lock:
+                if task_id not in pool._active_pids:
+                    break
+            time.sleep(0.01)
 
         assert result == "done"
         with pool._lock:

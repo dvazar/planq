@@ -9,8 +9,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v8.2.0
         with:
           python-version: "3.12"
       - run: uv run --extra dev ruff check src
@@ -23,7 +23,7 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # The integration tests are hard-wired to the docker-compose host ports
       # (redis on 16379, elasticmq/SQS on 19324), and 100% coverage requires
@@ -31,7 +31,7 @@ jobs:
       - name: Start backing services (redis + elasticmq)
         run: docker compose -f tests/docker-compose.yaml up -d --wait
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v8.2.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -42,7 +42,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
