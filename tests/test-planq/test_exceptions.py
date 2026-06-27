@@ -31,13 +31,15 @@ class TestExceptionInheritance:
         """MethodNotFound inherits from PlanqError."""
         assert issubclass(MethodNotFound, PlanqError)
 
-    def test_handler_timeout_inherits_from_planq_error(self):
-        """HandlerTimeout inherits from PlanqError."""
-        assert issubclass(HandlerTimeout, PlanqError)
+    def test_handler_timeout_is_not_a_planq_error(self):
+        """HandlerTimeout is cancellation, not a PlanqError (Exception)."""
+        assert not issubclass(HandlerTimeout, PlanqError)
+        assert not issubclass(HandlerTimeout, Exception)
 
-    def test_process_shutdown_inherits_from_planq_error(self):
-        """ProcessShutdown inherits from PlanqError."""
-        assert issubclass(ProcessShutdown, PlanqError)
+    def test_process_shutdown_is_not_a_planq_error(self):
+        """ProcessShutdown is cancellation, not a PlanqError (Exception)."""
+        assert not issubclass(ProcessShutdown, PlanqError)
+        assert not issubclass(ProcessShutdown, Exception)
 
     def test_feature_not_supported_inherits_from_planq_error(self):
         """FeatureNotSupportedError inherits from PlanqError."""
@@ -50,16 +52,25 @@ class TestExceptionInheritance:
 class TestCancellationHierarchy:
     """Verify the HandlerCancelled cancellation family relationships.
 
-    The router relies on ``HandlerTimeout`` and ``Shutdown`` being
-    distinct branches under a common base: a ``Shutdown`` must trigger
-    an unconditional requeue, while a ``HandlerTimeout`` stays on the
-    normal ``retry_on`` path. The negative assertion below guards that
-    a future ``except Shutdown`` clause never swallows a timeout.
+    Cancellation is a control signal, not a domain error: the family
+    subclasses ``BaseException`` (like ``asyncio.CancelledError`` since
+    Python 3.8) so a handler's broad ``except Exception`` cannot swallow
+    it. The router still keeps ``HandlerTimeout`` and ``Shutdown`` as
+    distinct branches — a ``Shutdown`` triggers an unconditional
+    requeue, while a ``HandlerTimeout`` stays on the ``retry_on`` path.
     """
 
-    def test_handler_cancelled_inherits_from_planq_error(self):
-        """HandlerCancelled is a subclass of PlanqError."""
-        assert issubclass(HandlerCancelled, PlanqError)
+    def test_handler_cancelled_is_base_exception_not_exception(self):
+        """HandlerCancelled is a BaseException, deliberately not Exception."""
+        assert issubclass(HandlerCancelled, BaseException)
+        assert not issubclass(HandlerCancelled, Exception)
+
+    def test_cancellation_family_is_base_exception_not_exception(self):
+        """The whole cancellation family bypasses except Exception."""
+        for exc_type in (HandlerTimeout, Shutdown, ProcessShutdown):
+            assert issubclass(exc_type, HandlerCancelled)
+            assert issubclass(exc_type, BaseException)
+            assert not issubclass(exc_type, Exception)
 
     def test_handler_timeout_inherits_from_handler_cancelled(self):
         """HandlerTimeout inherits from HandlerCancelled."""
@@ -101,12 +112,16 @@ class TestShutdown:
         except HandlerCancelled as exc:
             assert isinstance(exc, Shutdown)
 
-    def test_can_catch_as_planq_error(self):
-        """Shutdown can be caught as PlanqError."""
+    def test_not_caught_by_except_exception(self):
+        """A broad except Exception must not swallow a Shutdown."""
+        caught_by_exception = False
         try:
             raise Shutdown()
-        except PlanqError as exc:
-            assert isinstance(exc, Shutdown)
+        except Exception:
+            caught_by_exception = True
+        except HandlerCancelled:
+            pass
+        assert caught_by_exception is False
 
 
 # === Layer 2: Base Exception ===
@@ -240,19 +255,23 @@ class TestHandlerTimeout:
         except HandlerTimeout as exc:
             assert exc.time_limit == 30.0
 
-    def test_can_catch_as_planq_error(self):
-        """HandlerTimeout can be caught as PlanqError."""
+    def test_can_catch_as_handler_cancelled(self):
+        """HandlerTimeout can be caught as HandlerCancelled."""
         try:
             raise HandlerTimeout(30.0)
-        except PlanqError as exc:
+        except HandlerCancelled as exc:
             assert isinstance(exc, HandlerTimeout)
 
-    def test_can_catch_as_exception(self):
-        """HandlerTimeout can be caught as Exception."""
+    def test_not_caught_by_except_exception(self):
+        """A broad except Exception must not swallow a HandlerTimeout."""
+        caught_by_exception = False
         try:
             raise HandlerTimeout(30.0)
-        except Exception as exc:
-            assert isinstance(exc, HandlerTimeout)
+        except Exception:
+            caught_by_exception = True
+        except HandlerCancelled:
+            pass
+        assert caught_by_exception is False
 
     @pytest.mark.parametrize(
         "time_limit",
@@ -403,19 +422,23 @@ class TestProcessShutdown:
         except ProcessShutdown as exc:
             assert str(exc) == "Worker process is shutting down"
 
-    def test_can_catch_as_planq_error(self):
-        """ProcessShutdown can be caught as PlanqError."""
+    def test_can_catch_as_handler_cancelled(self):
+        """ProcessShutdown can be caught as HandlerCancelled."""
         try:
             raise ProcessShutdown()
-        except PlanqError as exc:
+        except HandlerCancelled as exc:
             assert isinstance(exc, ProcessShutdown)
 
-    def test_can_catch_as_exception(self):
-        """ProcessShutdown can be caught as Exception."""
+    def test_not_caught_by_except_exception(self):
+        """A broad except Exception must not swallow a ProcessShutdown."""
+        caught_by_exception = False
         try:
             raise ProcessShutdown()
-        except Exception as exc:
-            assert isinstance(exc, ProcessShutdown)
+        except Exception:
+            caught_by_exception = True
+        except HandlerCancelled:
+            pass
+        assert caught_by_exception is False
 
     def test_fixed_message(self):
         """ProcessShutdown always has the same message."""

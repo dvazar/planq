@@ -1,6 +1,6 @@
 [project]
 name = "PlanQ"
-version = "0.2.0"
+version = "0.3.0"
 description = "Transport-agnostic async task queue using JSON-RPC 2.0"
 authors = [
     { name = "Dmitrii Azarenko", email = "1531255+dvazar@users.noreply.github.com" },

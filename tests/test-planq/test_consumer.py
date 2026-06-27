@@ -723,7 +723,11 @@ class TestErrorHandling:
 
     @pytest.mark.asyncio
     async def test_handler_timeout_treated_as_retriable(self, mock_message):
-        """HandlerTimeout is retriable if attempts remain."""
+        """HandlerTimeout is retriable via retry_on=HandlerTimeout.
+
+        Since cancellation is a BaseException, ``retry_on=Exception`` no
+        longer covers a timeout; opt in with ``retry_on=HandlerTimeout``.
+        """
         broker = MagicMock()
         app = Planq(broker=broker)
 
@@ -732,7 +736,7 @@ class TestErrorHandling:
             mode=ExecutionMode.ASYNC,
             max_retries=3,
             time_limit=0.01,
-            retry_on=Exception,
+            retry_on=HandlerTimeout,
         )
         async def handler():
             await asyncio.sleep(1.0)  # Exceeds time_limit
@@ -2292,6 +2296,86 @@ class TestShutdownRequeue:
 
         msg.nack.assert_called_once()
         broker.publish.assert_not_called()
+
+
+# === Layer 8a.1: Cancellation pipeline boundary ===
+
+
+class TestCancellationPipelineBoundary:
+    """HandlerCancelled is a BaseException, so the pipeline must catch it
+    explicitly. These lock the invariant that a HandlerTimeout is still
+    fully consumed inside _process_message (never escaping to the
+    TaskGroup, which would crash the worker) and that retry_on still
+    applies to it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_timeout_is_handled_not_escaped(self, mock_message):
+        """A HandlerTimeout is rejected (retry_on=None), never escapes."""
+        broker = AsyncMock()
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
+
+        @app.task("test.to_reject", mode=ExecutionMode.ASYNC, retry_on=None)
+        async def handler():
+            raise HandlerTimeout(30.0)
+
+        msg = mock_message(method="test.to_reject", id=None)
+
+        # Must not raise: the pipeline must consume the cancellation.
+        await consumer._process_message(msg)
+
+        msg.reject.assert_called_once()
+        msg.ack.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_timeout_retried_when_retry_on_matches(self, mock_message):
+        """retry_on=HandlerTimeout still retries a timed-out handler."""
+        broker = AsyncMock()
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
+
+        @app.task(
+            "test.to_retry",
+            mode=ExecutionMode.ASYNC,
+            max_retries=3,
+            retry_on=HandlerTimeout,
+        )
+        async def handler():
+            raise HandlerTimeout(30.0)
+
+        msg = mock_message(method="test.to_retry", id=None, delivery_count=1)
+
+        await consumer._process_message(msg)
+
+        msg.nack.assert_called_once()
+        msg.reject.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_retry_on_exception_does_not_cover_timeout(
+        self, mock_message
+    ):
+        """retry_on=Exception no longer retries a timeout (it is not an
+        Exception); the message is rejected."""
+        broker = AsyncMock()
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
+
+        @app.task(
+            "test.to_exc",
+            mode=ExecutionMode.ASYNC,
+            max_retries=3,
+            retry_on=Exception,
+        )
+        async def handler():
+            raise HandlerTimeout(30.0)
+
+        msg = mock_message(method="test.to_exc", id=None, delivery_count=1)
+
+        await consumer._process_message(msg)
+
+        msg.reject.assert_called_once()
+        msg.nack.assert_not_called()
 
 
 # === Layer 8b: _ProcessPool Unit Tests ===
