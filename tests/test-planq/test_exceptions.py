@@ -6,6 +6,7 @@ import pytest
 
 from planq.exceptions import (
     FeatureNotSupportedError,
+    HandlerCancelled,
     HandlerTimeout,
     MaxRetriesExceeded,
     MethodNotFound,
@@ -13,6 +14,7 @@ from planq.exceptions import (
     ProcessShutdown,
     RejectMessage,
     RetryMessage,
+    Shutdown,
 )
 
 # === Layer 1: Exception Hierarchy ===
@@ -40,6 +42,71 @@ class TestExceptionInheritance:
     def test_feature_not_supported_inherits_from_planq_error(self):
         """FeatureNotSupportedError inherits from PlanqError."""
         assert issubclass(FeatureNotSupportedError, PlanqError)
+
+
+# === Layer 1b: Cancellation Hierarchy ===
+
+
+class TestCancellationHierarchy:
+    """Verify the HandlerCancelled cancellation family relationships.
+
+    The router relies on ``HandlerTimeout`` and ``Shutdown`` being
+    distinct branches under a common base: a ``Shutdown`` must trigger
+    an unconditional requeue, while a ``HandlerTimeout`` stays on the
+    normal ``retry_on`` path. The negative assertion below guards that
+    a future ``except Shutdown`` clause never swallows a timeout.
+    """
+
+    def test_handler_cancelled_inherits_from_planq_error(self):
+        """HandlerCancelled is a subclass of PlanqError."""
+        assert issubclass(HandlerCancelled, PlanqError)
+
+    def test_handler_timeout_inherits_from_handler_cancelled(self):
+        """HandlerTimeout inherits from HandlerCancelled."""
+        assert issubclass(HandlerTimeout, HandlerCancelled)
+
+    def test_shutdown_inherits_from_handler_cancelled(self):
+        """Shutdown inherits from HandlerCancelled."""
+        assert issubclass(Shutdown, HandlerCancelled)
+
+    def test_process_shutdown_inherits_from_shutdown(self):
+        """ProcessShutdown is a specialized Shutdown."""
+        assert issubclass(ProcessShutdown, Shutdown)
+
+    def test_timeout_is_not_a_shutdown(self):
+        """HandlerTimeout must not be caught by `except Shutdown`."""
+        assert not issubclass(HandlerTimeout, Shutdown)
+
+
+class TestShutdown:
+    """Test Shutdown exception used for cooperative cancellation."""
+
+    def test_can_raise_shutdown(self):
+        """Shutdown can be raised."""
+        with pytest.raises(Shutdown):
+            raise Shutdown()
+
+    def test_default_message(self):
+        """Shutdown has a sensible default message."""
+        assert str(Shutdown()) == "Consumer is shutting down"
+
+    def test_custom_message(self):
+        """Shutdown accepts a custom message."""
+        assert str(Shutdown("rolling deploy")) == "rolling deploy"
+
+    def test_can_catch_as_handler_cancelled(self):
+        """Shutdown can be caught as HandlerCancelled."""
+        try:
+            raise Shutdown()
+        except HandlerCancelled as exc:
+            assert isinstance(exc, Shutdown)
+
+    def test_can_catch_as_planq_error(self):
+        """Shutdown can be caught as PlanqError."""
+        try:
+            raise Shutdown()
+        except PlanqError as exc:
+            assert isinstance(exc, Shutdown)
 
 
 # === Layer 2: Base Exception ===

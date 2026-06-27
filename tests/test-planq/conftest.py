@@ -6,11 +6,25 @@ import pytest
 from hypothesis import settings
 from hypothesis import strategies as st
 
+from planq.context import reset_shutdown
 from planq.models import JsonRpcRequest
 
 # Configure hypothesis for consistent test behavior
 settings.register_profile("default", max_examples=100, deadline=1000)
 settings.load_profile("default")
+
+
+@pytest.fixture(autouse=True)
+def _reset_global_shutdown():
+    """Isolate the process-wide shutdown flag between tests.
+
+    ``planq.context._shutdown_reason`` is module-level global state;
+    reset it around every test so one test's shutdown broadcast cannot
+    leak into another.
+    """
+    reset_shutdown()
+    yield
+    reset_shutdown()
 
 
 # === JsonRpcRequest Fixtures ===

@@ -504,7 +504,7 @@ class TestThreadContextCancellation:
 
         def handler():
             ctx = get_planq_context()
-            ctx.cancel()
+            ctx.cancel(HandlerTimeout())
             return ctx.is_cancelled
 
         result = await thread_consumer._execute_thread(
@@ -530,7 +530,7 @@ class TestThreadContextCancellation:
 
         def handler():
             ctx = get_planq_context()
-            ctx.cancel()
+            ctx.cancel(HandlerTimeout())
             ctx.check_cancellation()
 
         with pytest.raises(HandlerTimeout) as exc_info:
@@ -583,7 +583,7 @@ class TestThreadContextCancellation:
             ctx = get_planq_context()
             for i in range(10):
                 if i == 3:  # Manually cancel partway through
-                    ctx.cancel()
+                    ctx.cancel(HandlerTimeout())
                 try:
                     ctx.check_cancellation()
                 except HandlerTimeout:
@@ -694,8 +694,14 @@ class TestProcessPoolManagement:
 
         future, task_id = pool.submit(_long_running_process_handler)
 
-        # Wait for monitor to process handshake
-        time.sleep(0.3)
+        # Poll for the handshake instead of a fixed sleep (a fixed sleep
+        # is flaky on a loaded runner / slow process spawn).
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            with pool._lock:
+                if task_id in pool._active_pids:
+                    break
+            time.sleep(0.01)
 
         # PID should be registered while task is running
         with pool._lock:
@@ -892,8 +898,14 @@ class TestProcessPoolManagement:
 
         future, task_id = pool.submit(_long_running_process_handler)
 
-        # Wait for PID registration
-        time.sleep(0.3)
+        # Poll for the PID handshake instead of a fixed sleep (a fixed
+        # sleep is flaky on a loaded runner / slow process spawn).
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            with pool._lock:
+                if task_id in pool._active_pids:
+                    break
+            time.sleep(0.01)
 
         # PID should be registered
         with pool._lock:

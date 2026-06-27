@@ -87,6 +87,9 @@ class LogEvent(StrEnum):
     MESSAGE_REQUEUEING = "message_requeueing"
     """Message is being nacked for redelivery after RetryMessage."""
 
+    WORKER_SHUTDOWN_REQUEUEING = "worker_shutdown_requeueing"
+    """In-flight message requeued because the worker is shutting down."""
+
     MESSAGE_REJECTING = "message_rejecting"
     """Message is being permanently rejected."""
 

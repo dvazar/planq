@@ -20,13 +20,20 @@ from planq.consumer import (
     _worker_main,
     should_retry,
 )
-from planq.context import _planq_context, get_planq_context
+from planq.context import (
+    PlanqContext,
+    _planq_context,
+    get_planq_context,
+    request_shutdown,
+)
 from planq.enums import ExecutionMode, JsonRpcError
 from planq.exceptions import (
     FeatureNotSupportedError,
     HandlerTimeout,
+    ProcessShutdown,
     RejectMessage,
     RetryMessage,
+    Shutdown,
 )
 from planq.message import BrokerMessage
 from planq.middleware import DeadlineMiddleware, Middleware
@@ -36,6 +43,7 @@ from planq.models import (
     TaskResult,
     TaskRoute,
 )
+from planq.providers.memory import InMemoryBroker
 
 
 def _add_one(x: int) -> int:
@@ -2037,6 +2045,255 @@ class TestRouterEndpointRetryOn:
             await consumer._router_endpoint(msg)
 
 
+# === Layer 8.5: Consumer-level retry_on ===
+
+
+class TestConsumerLevelRetryOn:
+    """A consumer-level retry_on acts as a default for routes.
+
+    Mirrors the existing max_retries tiering (route → consumer). A
+    route's own retry_on — including an empty list, meaning "never
+    retry" — overrides the consumer default entirely (most specific
+    wins, no merging).
+    """
+
+    def _consumer_with_retry_on(self, retry_on):
+        broker = MagicMock()
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(
+            app,
+            settings=ConsumerSettings(retry_on=retry_on),
+            middlewares=[],
+        )
+        return app, consumer
+
+    def _bind_ctx(self, msg):
+        _planq_context.set(None)
+        ctx = get_planq_context()
+        ctx.msg = msg
+
+    @pytest.mark.asyncio
+    async def test_consumer_retry_on_applies_when_route_has_none(
+        self, mock_message
+    ):
+        """Consumer retry_on retries an error a route left to default."""
+        app, consumer = self._consumer_with_retry_on(ValueError)
+
+        @app.task("test.global_retry", mode=ExecutionMode.ASYNC, max_retries=3)
+        async def handler():
+            raise ValueError("retry via consumer default")
+
+        msg = mock_message(
+            method="test.global_retry", id=None, delivery_count=1
+        )
+        self._bind_ctx(msg)
+
+        with pytest.raises(RetryMessage):
+            await consumer._router_endpoint(msg)
+
+    @pytest.mark.asyncio
+    async def test_consumer_retry_on_rejects_non_matching(self, mock_message):
+        """Consumer retry_on rejects an error it does not match."""
+        app, consumer = self._consumer_with_retry_on(ValueError)
+
+        @app.task("test.global_reject", mode=ExecutionMode.ASYNC, max_retries=3)
+        async def handler():
+            raise KeyError("not covered by consumer default")
+
+        msg = mock_message(
+            method="test.global_reject", id=None, delivery_count=1
+        )
+
+        with pytest.raises(RejectMessage):
+            await consumer._router_endpoint(msg)
+
+    @pytest.mark.asyncio
+    async def test_route_retry_on_overrides_consumer(self, mock_message):
+        """A route's retry_on replaces the consumer default entirely."""
+        app, consumer = self._consumer_with_retry_on(Exception)
+
+        @app.task(
+            "test.route_wins",
+            mode=ExecutionMode.ASYNC,
+            max_retries=3,
+            retry_on=KeyError,
+        )
+        async def handler():
+            raise ValueError("route retry_on does not cover this")
+
+        msg = mock_message(method="test.route_wins", id=None, delivery_count=1)
+
+        # Consumer default (Exception) would retry, but the route's
+        # KeyError-only policy wins and ValueError is rejected.
+        with pytest.raises(RejectMessage):
+            await consumer._router_endpoint(msg)
+
+    @pytest.mark.asyncio
+    async def test_empty_route_retry_on_opts_out_of_consumer_default(
+        self, mock_message
+    ):
+        """An empty route retry_on means never retry, ignoring the default."""
+        app, consumer = self._consumer_with_retry_on(Exception)
+
+        @app.task(
+            "test.opt_out",
+            mode=ExecutionMode.ASYNC,
+            max_retries=3,
+            retry_on=[],
+        )
+        async def handler():
+            raise ValueError("opted out of all retries")
+
+        msg = mock_message(method="test.opt_out", id=None, delivery_count=1)
+
+        with pytest.raises(RejectMessage):
+            await consumer._router_endpoint(msg)
+
+    @pytest.mark.asyncio
+    async def test_no_retry_on_anywhere_rejects(self, mock_message):
+        """With no route and no consumer retry_on, errors reject (default)."""
+        app, consumer = self._consumer_with_retry_on(None)
+
+        @app.task("test.none_none", mode=ExecutionMode.ASYNC, max_retries=3)
+        async def handler():
+            raise ValueError("nothing opts in")
+
+        msg = mock_message(method="test.none_none", id=None, delivery_count=1)
+
+        with pytest.raises(RejectMessage):
+            await consumer._router_endpoint(msg)
+
+    def test_get_retry_on_prefers_route(self):
+        """_get_retry_on returns the route's retry_on when set."""
+        app, consumer = self._consumer_with_retry_on(ValueError)
+        route = TaskRoute(
+            handler=lambda: None,
+            mode=ExecutionMode.ASYNC,
+            retry_on=KeyError,
+        )
+        assert consumer._get_retry_on(route) is KeyError
+
+    def test_get_retry_on_falls_back_to_consumer(self):
+        """_get_retry_on falls back to consumer settings when route is None."""
+        app, consumer = self._consumer_with_retry_on(ValueError)
+        route = TaskRoute(handler=lambda: None, mode=ExecutionMode.ASYNC)
+        assert consumer._get_retry_on(route) is ValueError
+
+    def test_get_retry_on_none_when_neither_set(self):
+        """_get_retry_on returns None when neither route nor consumer set it."""
+        app, consumer = self._consumer_with_retry_on(None)
+        route = TaskRoute(handler=lambda: None, mode=ExecutionMode.ASYNC)
+        assert consumer._get_retry_on(route) is None
+
+
+# === Layer 8a: Shutdown Requeue ===
+
+
+class TestShutdownRequeue:
+    """A handler interrupted by Shutdown requeues, never rejects.
+
+    Shutdown is a worker-lifecycle event, not a handler fault: the
+    message must go back to the broker for another worker regardless of
+    ``retry_on``, and must not be rejected or acked.
+    """
+
+    @pytest.mark.asyncio
+    async def test_shutdown_requeues_instead_of_rejecting(self, mock_message):
+        """Shutdown nacks even with retry_on=None (default reject policy)."""
+        broker = AsyncMock()
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
+
+        @app.task("test.shutdown", mode=ExecutionMode.ASYNC)
+        async def handler():
+            raise Shutdown()
+
+        msg = mock_message(method="test.shutdown", id=None)
+
+        await consumer._process_message(msg)
+
+        msg.nack.assert_called_once()
+        msg.reject.assert_not_called()
+        msg.ack.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_requeues_with_zero_delay(self, mock_message):
+        """Shutdown nacks with delay 0 for immediate failover."""
+        broker = AsyncMock()
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
+
+        @app.task("test.shutdown_delay", mode=ExecutionMode.ASYNC)
+        async def handler():
+            raise Shutdown()
+
+        msg = mock_message(method="test.shutdown_delay", id=None)
+
+        await consumer._process_message(msg)
+
+        msg.nack.assert_called_once_with(0)
+
+    @pytest.mark.asyncio
+    async def test_process_shutdown_requeues(self, mock_message):
+        """ProcessShutdown (a Shutdown subclass) also requeues."""
+        broker = AsyncMock()
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
+
+        @app.task("test.proc_shutdown", mode=ExecutionMode.ASYNC)
+        async def handler():
+            raise ProcessShutdown()
+
+        msg = mock_message(method="test.proc_shutdown", id=None)
+
+        await consumer._process_message(msg)
+
+        msg.nack.assert_called_once()
+        msg.reject.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_bypasses_retry_on(self, mock_message):
+        """Shutdown requeues even when it does not match retry_on."""
+        broker = AsyncMock()
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
+
+        @app.task(
+            "test.shutdown_retry_on",
+            mode=ExecutionMode.ASYNC,
+            retry_on=ValueError,
+        )
+        async def handler():
+            raise Shutdown()
+
+        msg = mock_message(method="test.shutdown_retry_on", id=None)
+
+        await consumer._process_message(msg)
+
+        msg.nack.assert_called_once()
+        msg.reject.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_shutdown_for_request_does_not_send_error_response(
+        self, mock_message
+    ):
+        """A request interrupted by Shutdown is requeued, not answered."""
+        broker = AsyncMock()
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
+
+        @app.task("test.shutdown_req", mode=ExecutionMode.ASYNC)
+        async def handler():
+            raise Shutdown()
+
+        msg = mock_message(method="test.shutdown_req", id="req-1")
+
+        await consumer._process_message(msg)
+
+        msg.nack.assert_called_once()
+        broker.publish.assert_not_called()
+
+
 # === Layer 8b: _ProcessPool Unit Tests ===
 
 
@@ -2262,6 +2519,67 @@ class TestSignalHandlingAndShutdown:
             )
             assert sigint_registered
             assert sigterm_registered
+
+    @pytest.mark.asyncio
+    async def test_run_registers_initiate_shutdown_as_signal_handler(self):
+        """Signal handlers trigger _initiate_shutdown (flag + event)."""
+        broker = AsyncMock()
+        app = Planq(broker=broker)
+
+        async def empty_consume(queue, prefetch):
+            return
+            yield
+
+        broker.consume = empty_consume
+        consumer = PlanqConsumer(app, middlewares=[])
+
+        with patch.object(asyncio, "get_running_loop") as mock_get_loop:
+            loop = MagicMock()
+            mock_get_loop.return_value = loop
+
+            try:
+                await consumer.run("test-queue")
+            except Exception:
+                pass
+
+            callbacks = [
+                call[0][1] for call in loop.add_signal_handler.call_args_list
+            ]
+            assert callbacks
+            assert all(cb == consumer._initiate_shutdown for cb in callbacks)
+
+    @pytest.mark.asyncio
+    async def test_stop_broadcasts_global_shutdown(self):
+        """stop() sets the event and broadcasts a cooperative Shutdown."""
+        broker = AsyncMock()
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(
+            app, middlewares=[], install_signal_handlers=False
+        )
+
+        await consumer.stop()
+
+        assert consumer._shutdown_event.is_set()
+        assert PlanqContext().is_cancelled is True
+        with pytest.raises(Shutdown):
+            PlanqContext().check_cancellation()
+
+    @pytest.mark.asyncio
+    async def test_run_clears_stale_shutdown_flag(self):
+        """run() resets a leftover global shutdown flag at startup."""
+        broker = InMemoryBroker()
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(
+            app, middlewares=[], install_signal_handlers=False
+        )
+
+        request_shutdown(Shutdown())
+        assert PlanqContext().is_cancelled is True
+
+        # No queues: the TaskGroup drains immediately after the reset.
+        await consumer.run()
+
+        assert PlanqContext().is_cancelled is False
 
     @pytest.mark.asyncio
     async def test_run_shutdown_breaks_consume_loop(self, mock_message):

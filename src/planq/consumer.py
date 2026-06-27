@@ -22,7 +22,12 @@ from typing import (
 )
 
 from planq.backoff import full_jitter
-from planq.context import PlanqContext, get_planq_context
+from planq.context import (
+    PlanqContext,
+    get_planq_context,
+    request_shutdown,
+    reset_shutdown,
+)
 from planq.enums import ExecutionMode, Header, JsonRpcError, LogEvent
 from planq.exceptions import (
     FeatureNotSupportedError,
@@ -33,6 +38,7 @@ from planq.exceptions import (
     ProcessShutdown,
     RejectMessage,
     RetryMessage,
+    Shutdown,
 )
 from planq.log import get_planq_logger
 from planq.middleware import (
@@ -334,6 +340,18 @@ class PlanqConsumer:
         which case ``run()`` exits on the first fetch), after
         :meth:`run` completes, or multiple times.
         """
+        self._initiate_shutdown()
+
+    def _initiate_shutdown(self) -> None:
+        """Begin graceful shutdown of this consumer.
+
+        Broadcasts a cooperative :class:`Shutdown` to in-flight
+        ASYNC/THREAD handlers (so a handler polling
+        :meth:`PlanqContext.check_cancellation` can persist progress
+        and unwind) and stops the per-queue poll loops. Used as both
+        the SIGINT/SIGTERM handler and the body of :meth:`stop`.
+        """
+        request_shutdown(Shutdown())
         self._shutdown_event.set()
 
     def on_reject(
@@ -494,6 +512,31 @@ class PlanqConsumer:
             return self._settings.max_retries
         return DEFAULT_MAX_RETRIES
 
+    def _get_retry_on(
+        self, route: TaskRoute
+    ) -> (
+        RetryCondition
+        | list[RetryCondition]
+        | tuple[RetryCondition, ...]
+        | None
+    ):
+        """Resolve retry conditions using priority: route → settings.
+
+        A route's own ``retry_on`` wins, including an empty list/tuple
+        which means "never retry" and opts out of the consumer default.
+        ``None`` defers to the consumer-level default (which may also be
+        ``None``, meaning no retries).
+
+        Args:
+            route: The route being executed.
+
+        Returns:
+            The effective retry conditions, or ``None`` for no retries.
+        """
+        if route.retry_on is not None:
+            return route.retry_on
+        return self._settings.retry_on
+
     def _run_before_execute_hooks(self, ctx: PlanqContext) -> None:
         for mw in self._middlewares:
             mw.before_execute(ctx)
@@ -551,8 +594,9 @@ class PlanqConsumer:
             async with asyncio.timeout(time_limit):
                 return await asyncio.to_thread(_run_with_hooks)
         except TimeoutError as e:
-            ctx.cancel()
-            raise HandlerTimeout(time_limit) from e
+            timeout = HandlerTimeout(time_limit)
+            ctx.cancel(timeout)
+            raise timeout from e
 
     async def _execute_process(
         self,
@@ -689,6 +733,12 @@ class PlanqConsumer:
             result = await self._execute(route, msg.body.params, method)
         except RetryMessage:
             raise  # propagate RetryMessage without modification
+        except Shutdown:
+            # Worker is shutting down mid-handler: never treat as a
+            # handler fault. Propagate so the transport requeues the
+            # message regardless of retry_on (handled in
+            # _process_message).
+            raise
         except InvalidParamsError as exc:
             if msg.correlation_id is not None and msg.reply_to:
                 return JsonRpcResponse(
@@ -705,10 +755,8 @@ class PlanqConsumer:
 
         # 3. Handle errors
         if handler_exc is not None:
-            if (
-                route.retry_on is None
-                or should_retry(handler_exc, route.retry_on) is False
-            ):
+            retry_on = self._get_retry_on(route)
+            if retry_on is None or should_retry(handler_exc, retry_on) is False:
                 raise RejectMessage(
                     "Message processing failed with a non-retryable "
                     f"error for method '{method}'."
@@ -838,6 +886,25 @@ class PlanqConsumer:
                 extra=log_ctx,
             )
             await msg.nack(backoff)
+
+        except Shutdown as exc:
+            # Worker shutting down mid-handler: requeue immediately so
+            # another worker can pick the message up, regardless of
+            # retry_on. Not a failure — log at info and do not count
+            # toward the retry budget. nack(0) makes the message visible
+            # at once (the broker's native delivery_count remains the
+            # ceiling). Full-fleet deploys may briefly re-circulate it.
+            log_ctx = {
+                "event": LogEvent.WORKER_SHUTDOWN_REQUEUEING,
+                "reason": str(exc),
+            }
+            logger.info(
+                "Message ID: %(message_id)s. Worker shutting down;"
+                " requeueing for another worker. Method: %(method)r.",
+                log_ctx,
+                extra=log_ctx,
+            )
+            await msg.nack(0)
 
         except RejectMessage as exc:
             log_ctx = {
@@ -975,10 +1042,14 @@ class PlanqConsumer:
         Args:
             queues: Queue names to consume from.
         """
+        # Clear any process-wide shutdown flag left by a prior run so a
+        # fresh run does not start in a shutting-down state.
+        reset_shutdown()
+
         loop = asyncio.get_running_loop()
         if self._install_signal_handlers:
             for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(sig, self._shutdown_event.set)
+                loop.add_signal_handler(sig, self._initiate_shutdown)
 
         # Create the heartbeat file up front, before the potentially slow
         # broker connect below.
