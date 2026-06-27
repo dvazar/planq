@@ -99,7 +99,9 @@ def should_retry(
         conditions = (retry_on,)
 
     for condition in conditions:
-        if isinstance(condition, type) and issubclass(condition, Exception):
+        # BaseException (not Exception) so cancellation types such as
+        # HandlerTimeout remain valid retry_on conditions.
+        if isinstance(condition, type) and issubclass(condition, BaseException):
             if isinstance(exc, condition):
                 return True
 
@@ -727,7 +729,7 @@ class PlanqConsumer:
         ctx.route = route
         ctx.max_attempts = max_attempts = self._get_max_retries(route) + 1
 
-        handler_exc: Exception | None = None
+        handler_exc: Exception | HandlerTimeout | None = None
         result: Any = None
         try:
             result = await self._execute(route, msg.body.params, method)
@@ -750,6 +752,12 @@ class PlanqConsumer:
                     ),
                 )
             raise  # falls to RejectMessage handling
+        except HandlerTimeout as exc:
+            # HandlerTimeout is a BaseException (cancellation), so the
+            # generic `except Exception` below no longer catches it.
+            # Treat a deadline like a handler error: it flows through the
+            # retry_on / reject decision in step 3.
+            handler_exc = exc
         except Exception as exc:
             handler_exc = exc
 

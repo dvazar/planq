@@ -12,7 +12,7 @@ class PlanqError(Exception):
     """Base exception for all planq errors."""
 
 
-class HandlerCancelled(PlanqError):
+class HandlerCancelled(BaseException):
     """Base for any cooperative cancellation of a running handler.
 
     Raised from :meth:`planq.context.PlanqContext.check_cancellation`
@@ -20,6 +20,12 @@ class HandlerCancelled(PlanqError):
     (:class:`HandlerTimeout`) or worker shutdown (:class:`Shutdown`) —
     is carried by the subclass, so handlers can catch the base to run
     cleanup regardless of why they were canceled.
+
+    Inherits from :class:`BaseException`, not :class:`Exception` (like
+    :class:`asyncio.CancelledError` since Python 3.8), so a handler's
+    broad ``except Exception`` cannot accidentally swallow a
+    cancellation. Use ``except HandlerCancelled`` (or a ``finally``) to
+    run cleanup, then let it propagate.
     """
 
 
