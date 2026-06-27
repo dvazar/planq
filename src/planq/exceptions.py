@@ -12,7 +12,18 @@ class PlanqError(Exception):
     """Base exception for all planq errors."""
 
 
-class HandlerTimeout(PlanqError):
+class HandlerCancelled(PlanqError):
+    """Base for any cooperative cancellation of a running handler.
+
+    Raised from :meth:`planq.context.PlanqContext.check_cancellation`
+    when the handler is asked to stop. The concrete cause — a deadline
+    (:class:`HandlerTimeout`) or worker shutdown (:class:`Shutdown`) —
+    is carried by the subclass, so handlers can catch the base to run
+    cleanup regardless of why they were canceled.
+    """
+
+
+class HandlerTimeout(HandlerCancelled):
     """Raised when a handler exceeds its configured time_limit.
 
     Example: a handler registered with ``time_limit=30`` that runs for
@@ -34,7 +45,27 @@ class HandlerTimeout(PlanqError):
         self.time_limit = time_limit
 
 
-class ProcessShutdown(PlanqError):
+class Shutdown(HandlerCancelled):
+    """Raised inside an ASYNC/THREAD handler when the consumer stops.
+
+    Signals that the worker is shutting down (e.g. on SIGTERM from an
+    orchestrator). Handlers that cooperatively call
+    :meth:`planq.context.PlanqContext.check_cancellation` see this
+    exception and may persist progress before unwinding. Unlike a
+    handler error, a ``Shutdown`` always requeues the message rather
+    than rejecting it.
+    """
+
+    def __init__(self, message: str = "Consumer is shutting down") -> None:
+        """Initialize with an optional human-readable reason.
+
+        Args:
+            message: Description of why the handler is being stopped.
+        """
+        super().__init__(message)
+
+
+class ProcessShutdown(Shutdown):
     """Raised inside a PROCESS-mode worker on SIGTERM during shutdown."""
 
     def __init__(self) -> None:

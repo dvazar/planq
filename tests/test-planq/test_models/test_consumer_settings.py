@@ -202,6 +202,22 @@ class TestConsumerSettingsConstruction:
         settings = ConsumerSettings(max_retries=0)
         assert settings.max_retries == 0
 
+    def test_retry_on_defaults_to_none(self):
+        """retry_on defaults to None (no consumer-level retry policy)."""
+        settings = ConsumerSettings()
+        assert settings.retry_on is None
+
+    def test_retry_on_accepts_exception_type(self):
+        """retry_on accepts a single exception type."""
+        settings = ConsumerSettings(retry_on=ConnectionError)
+        assert settings.retry_on is ConnectionError
+
+    def test_retry_on_accepts_list_of_conditions(self):
+        """retry_on accepts a list of exception types and predicates."""
+        predicate = lambda exc: True  # noqa: E731
+        settings = ConsumerSettings(retry_on=[ConnectionError, predicate])
+        assert settings.retry_on == [ConnectionError, predicate]
+
 
 class TestConsumerSettingsImmutability:
     """Frozen=True enforcement via ConfigDict."""

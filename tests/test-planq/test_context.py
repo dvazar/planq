@@ -10,9 +10,15 @@ from typing import override
 
 import pytest
 
-from planq.context import PlanqContext, PlanqContextFilter, get_planq_context
+from planq.context import (
+    PlanqContext,
+    PlanqContextFilter,
+    get_planq_context,
+    request_shutdown,
+    reset_shutdown,
+)
 from planq.enums import ExecutionMode
-from planq.exceptions import HandlerTimeout
+from planq.exceptions import HandlerTimeout, Shutdown
 from planq.message import BrokerMessage
 from planq.models import JsonRpcRequest, TaskRoute
 from planq.tracing import TraceContext
@@ -108,23 +114,36 @@ class TestPlanqContextConstruction:
 class TestPlanqContextCancellation:
     """Test PlanqContext cancellation primitives."""
 
-    def test_cancel_sets_event(self):
-        """cancel() method sets internal event."""
+    def test_cancel_sets_is_cancelled(self):
+        """cancel(reason) flips is_cancelled to True."""
         ctx = PlanqContext()
 
         assert ctx.is_cancelled is False
 
-        ctx.cancel()
+        ctx.cancel(HandlerTimeout())
 
         assert ctx.is_cancelled is True
 
-    def test_check_cancellation_raises_when_cancelled(self):
-        """check_cancellation() raises HandlerTimeout when cancelled."""
+    def test_check_cancellation_raises_the_given_reason(self):
+        """check_cancellation() raises the exact reason passed to cancel()."""
         ctx = PlanqContext()
-        ctx.cancel()
+        reason = Shutdown()
+        ctx.cancel(reason)
 
-        with pytest.raises(HandlerTimeout):
+        with pytest.raises(Shutdown) as exc_info:
             ctx.check_cancellation()
+
+        assert exc_info.value is reason
+
+    def test_check_cancellation_preserves_reason_payload(self):
+        """A HandlerTimeout reason keeps its time_limit when re-raised."""
+        ctx = PlanqContext()
+        ctx.cancel(HandlerTimeout(5.0))
+
+        with pytest.raises(HandlerTimeout) as exc_info:
+            ctx.check_cancellation()
+
+        assert exc_info.value.time_limit == 5.0
 
     def test_check_cancellation_noop_when_not_cancelled(self):
         """check_cancellation() is no-op when not cancelled."""
@@ -139,11 +158,57 @@ class TestPlanqContextCancellation:
         """Calling cancel() multiple times is safe."""
         ctx = PlanqContext()
 
-        ctx.cancel()
-        ctx.cancel()
-        ctx.cancel()
+        ctx.cancel(HandlerTimeout())
+        ctx.cancel(HandlerTimeout())
+        ctx.cancel(HandlerTimeout())
 
         assert ctx.is_cancelled is True
+
+
+class TestPlanqContextGlobalShutdown:
+    """Test process-wide shutdown broadcast via the global flag."""
+
+    def test_global_shutdown_cancels_fresh_context(self):
+        """A context created after request_shutdown() reports cancelled."""
+        request_shutdown(Shutdown())
+
+        ctx = PlanqContext()
+
+        assert ctx.is_cancelled is True
+
+    def test_check_cancellation_raises_global_reason(self):
+        """check_cancellation() raises the global reason for any context."""
+        reason = Shutdown("draining")
+        request_shutdown(reason)
+
+        ctx = PlanqContext()
+
+        with pytest.raises(Shutdown) as exc_info:
+            ctx.check_cancellation()
+
+        assert exc_info.value is reason
+
+    def test_per_context_reason_takes_precedence_over_global(self):
+        """A per-context reason wins over the global shutdown reason."""
+        request_shutdown(Shutdown())
+        ctx = PlanqContext()
+        timeout = HandlerTimeout(10.0)
+        ctx.cancel(timeout)
+
+        with pytest.raises(HandlerTimeout) as exc_info:
+            ctx.check_cancellation()
+
+        assert exc_info.value is timeout
+
+    def test_reset_shutdown_clears_global(self):
+        """reset_shutdown() restores the no-cancellation state."""
+        request_shutdown(Shutdown())
+        reset_shutdown()
+
+        ctx = PlanqContext()
+
+        assert ctx.is_cancelled is False
+        ctx.check_cancellation()  # must not raise
 
 
 # === Layer 2: get_planq_context() Tests ===

@@ -74,6 +74,30 @@ class TestPlanqworkerCommand:
 
     @patch("planq.contrib.django.management.commands.planqworker.asyncio")
     @patch("planq.contrib.django.management.commands.planqworker.PlanqConsumer")
+    @override_settings(
+        PLANQ={
+            "BROKER_CLASS": ("planq.providers.memory.InMemoryBroker"),
+            "CONSUMER": {"retry_on": ConnectionError},
+        }
+    )
+    def test_consumer_retry_on_from_django(
+        self,
+        mock_consumer_cls: MagicMock,
+        mock_asyncio: MagicMock,
+    ) -> None:
+        _setup_mod._app = None
+        configure_planq()
+
+        consumer_instance = MagicMock()
+        consumer_instance.run_many = AsyncMock()
+        mock_consumer_cls.return_value = consumer_instance
+
+        call_command("planqworker", "default")
+        kwargs = mock_consumer_cls.call_args.kwargs
+        assert kwargs["settings"].retry_on is ConnectionError
+
+    @patch("planq.contrib.django.management.commands.planqworker.asyncio")
+    @patch("planq.contrib.django.management.commands.planqworker.PlanqConsumer")
     def test_cli_concurrency_overrides_settings(
         self,
         mock_consumer_cls: MagicMock,

@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./docs/images/logo-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="./docs/images/logo-light.svg">
-    <img alt="PlanQ" src="./docs/images/logo-light.svg" width="400px">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dvazar/planq/main/docs/images/logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/dvazar/planq/main/docs/images/logo-light.svg">
+    <img alt="PlanQ" src="https://raw.githubusercontent.com/dvazar/planq/main/docs/images/logo-light.svg" width="400px">
   </picture>
 </p>
 

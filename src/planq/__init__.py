@@ -64,12 +64,14 @@ from planq.context import PlanqContext, get_planq_context
 from planq.enums import ExecutionMode, Header, JsonRpcError, LogEvent
 from planq.exceptions import (
     FeatureNotSupportedError,
+    HandlerCancelled,
     HandlerTimeout,
     InvalidParamsError,
     ProcessShutdown,
     RejectMessage,
     Retry,
     RetryMessage,
+    Shutdown,
 )
 from planq.log import get_planq_logger, instrument_logging
 from planq.message import BrokerMessage
@@ -100,6 +102,7 @@ __all__ = [
     "DeadlineMiddleware",
     "ExecutionMode",
     "FeatureNotSupportedError",
+    "HandlerCancelled",
     "HandlerTimeout",
     "Header",
     "InMemoryBroker",
@@ -115,6 +118,7 @@ __all__ = [
     "RejectMessage",
     "Retry",
     "RetryMessage",
+    "Shutdown",
     "PlanqContext",
     "TaskResult",
     "TaskRoute",

@@ -43,6 +43,18 @@ class ConsumerSettings(BaseModel):
     # Zero means one attempt (initial delivery only, no retries).
     max_retries: int | None = None
 
+    # Default retry conditions for routes without their own retry_on.
+    # None means no retries unless a route opts in (the safe default).
+    # A route's own retry_on overrides this entirely (most specific
+    # wins, no merging); a route can pass an empty list to opt out of
+    # the consumer default and never retry.
+    retry_on: (
+        RetryCondition
+        | list[RetryCondition]
+        | tuple[RetryCondition, ...]
+        | None
+    ) = None
+
     # Initial backoff delay in seconds; doubles with each retry attempt.
     # Must be > 0.
     retry_base_delay: float = 1.0

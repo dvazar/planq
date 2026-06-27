@@ -9,13 +9,39 @@ from collections import ChainMap
 from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
-from planq.exceptions import HandlerTimeout
-
 if TYPE_CHECKING:
+    from planq.exceptions import HandlerCancelled
     from planq.message import BrokerMessage
     from planq.models import TaskRoute
     from planq.tracing import TraceContext
     from planq.types import Seconds
+
+
+#: Process-wide cancellation reason set while the worker is shutting
+#: down. ``None`` means the worker is running normally. Read by every
+#: PlanqContext so a single broadcast reaches all in-flight handlers
+#: without tracking a registry of live contexts.
+_shutdown_reason: HandlerCancelled | None = None
+
+
+def request_shutdown(reason: HandlerCancelled) -> None:
+    """Broadcast a cooperative shutdown to all handlers in this process.
+
+    After this call, every :meth:`PlanqContext.check_cancellation`
+    raises ``reason`` (unless the context has its own, more specific
+    reason), and :attr:`PlanqContext.is_cancelled` reports ``True``.
+
+    Args:
+        reason: Exception raised by cooperative cancellation checks.
+    """
+    global _shutdown_reason
+    _shutdown_reason = reason
+
+
+def reset_shutdown() -> None:
+    """Clear the process-wide shutdown reason set by request_shutdown()."""
+    global _shutdown_reason
+    _shutdown_reason = None
 
 
 class PlanqContext:
@@ -56,24 +82,39 @@ class PlanqContext:
         self.pipeline_cpu: Seconds | None = None
 
         self._stop_event = threading.Event()
+        self._reason: HandlerCancelled | None = None
 
     @property
     def is_cancelled(self) -> bool:
-        """True if cancellation has been requested."""
-        return self._stop_event.is_set()
+        """True if cancellation has been requested for this invocation.
 
-    def cancel(self) -> None:
-        """Signal cancellation to the thread. Called by the library."""
+        Reflects both a per-invocation ``cancel()`` (e.g. a deadline)
+        and a process-wide ``request_shutdown()``.
+        """
+        return self._stop_event.is_set() or _shutdown_reason is not None
+
+    def cancel(self, reason: HandlerCancelled) -> None:
+        """Signal cancellation of this invocation. Called by the library.
+
+        Args:
+            reason: Exception that ``check_cancellation()`` re-raises.
+        """
+        self._reason = reason
         self._stop_event.set()
 
     def check_cancellation(self) -> None:
-        """Raise HandlerTimeout if cancellation has been requested.
+        """Raise the cancellation reason if cancellation was requested.
+
+        A per-invocation reason (set via ``cancel()``) takes precedence
+        over the process-wide shutdown reason.
 
         Raises:
-            HandlerTimeout: If cancel() has been called.
+            HandlerCancelled: The reason passed to ``cancel()`` or the
+                process-wide reason set by ``request_shutdown()``.
         """
-        if self.is_cancelled:
-            raise HandlerTimeout()
+        reason = self._reason if self._stop_event.is_set() else _shutdown_reason
+        if reason is not None:
+            raise reason
 
 
 #: Active PlanqContext for the current handler invocation
