@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from io import StringIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,7 +11,9 @@ from django.core.management import call_command
 from django.test import override_settings
 
 import planq.contrib.django.setup as _setup_mod
+from planq import Planq, SyncPlanq
 from planq.contrib.django.setup import configure_planq
+from planq.contrib.django.management.commands.planqworker import _run_worker
 
 
 @pytest.fixture(autouse=True)
@@ -20,6 +23,14 @@ def _reset_singleton() -> None:
 
 
 class TestPlanqworkerCommand:
+    @pytest.fixture(autouse=True)
+    def _mock_run_worker(self):
+        with patch(
+            "planq.contrib.django.management.commands.planqworker._run_worker",
+            new_callable=MagicMock,
+        ):
+            yield
+
     @patch("planq.contrib.django.management.commands.planqworker.asyncio")
     @patch("planq.contrib.django.management.commands.planqworker.PlanqConsumer")
     def test_runs_with_single_queue(
@@ -228,6 +239,41 @@ class TestPlanqworkerCommand:
 
         call_command("planqworker", "default")
         mock_importlib.import_module.assert_not_called()
+
+
+class TestRunWorker:
+    """Tests for worker event-loop ownership."""
+
+    @pytest.mark.asyncio
+    async def test_sync_app_is_bound_before_consumer_run(self) -> None:
+        """SyncPlanq is bound to the running worker loop before consumption."""
+        app = SyncPlanq(broker=MagicMock())
+        consumer = MagicMock()
+        observed: dict[str, object] = {}
+
+        async def run(*queues: str) -> None:
+            observed["queues"] = queues
+            observed["running_loop"] = asyncio.get_running_loop()
+            observed["app_loop"] = app._loop
+
+        consumer.run = AsyncMock(side_effect=run)
+
+        await _run_worker(app, consumer, ["default", "emails"])
+
+        assert observed["queues"] == ("default", "emails")
+        assert observed["app_loop"] is observed["running_loop"]
+        assert app._thread is None
+
+    @pytest.mark.asyncio
+    async def test_async_app_runs_without_sync_binding(self) -> None:
+        """Plain Planq apps run without SyncPlanq-specific behavior."""
+        app = Planq(broker=MagicMock())
+        consumer = MagicMock()
+        consumer.run = AsyncMock()
+
+        await _run_worker(app, consumer, ["default"])
+
+        consumer.run.assert_awaited_once_with("default")
 
 
 # === TestPlanqstatsCommand ===

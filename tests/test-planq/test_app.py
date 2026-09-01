@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -842,6 +842,45 @@ class TestSyncPlanqBindLoop:
         finally:
             external1.close()
             external2.close()
+
+    @pytest.mark.asyncio
+    async def test_run_sync_rejects_call_from_bound_loop(self) -> None:
+        """Synchronous dispatch from the bound loop fails instead of hanging."""
+        app = SyncPlanq(_make_broker())
+        app.bind_loop(asyncio.get_running_loop())
+
+        async def publish() -> str:
+            return "message-id"
+
+        coro = publish()
+        try:
+            with patch(
+                "planq.app.asyncio.run_coroutine_threadsafe"
+            ) as submit:
+                with pytest.raises(
+                    RuntimeError,
+                    match="cannot block its bound event loop",
+                ):
+                    app._run_sync(coro)
+            submit.assert_not_called()
+            assert coro.cr_frame is None
+        finally:
+            coro.close()
+
+    @pytest.mark.asyncio
+    async def test_run_sync_allows_a_different_running_loop(self) -> None:
+        """A caller loop may synchronously bridge to a separate owner loop."""
+        app = SyncPlanq(_make_broker())
+
+        @app.task("different-loop", queue_name="q")
+        def task() -> None: ...
+
+        try:
+            result = task.send()
+            assert result == "msg-id-123"
+            assert app._loop is not asyncio.get_running_loop()
+        finally:
+            app.close()
 
 
 # === TestPlanqApp ===

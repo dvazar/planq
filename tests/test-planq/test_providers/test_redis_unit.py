@@ -330,6 +330,82 @@ class TestConnectReconnects:
         b._client = None
 
 
+class TestLoopAffinity:
+    """RedisBroker owns one event loop until clean disconnect."""
+
+    @pytest.mark.asyncio
+    async def test_connect_from_second_loop_raises(self) -> None:
+        """The idempotent fast path still validates the caller loop."""
+        broker = RedisBroker(dsn="redis://localhost")
+        client = MagicMock()
+        client.aclose = AsyncMock()
+
+        with patch(
+            "planq.providers.redis.Redis.from_url",
+            return_value=client,
+        ):
+            await broker.connect()
+            try:
+                with pytest.raises(
+                    RuntimeError,
+                    match="owned by a different event loop",
+                ):
+                    await asyncio.to_thread(
+                        lambda: asyncio.run(broker.connect())
+                    )
+            finally:
+                await broker.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_from_second_loop_raises(self) -> None:
+        """A loop-bound client is never closed from another loop."""
+        broker = RedisBroker(dsn="redis://localhost")
+        client = MagicMock()
+        client.aclose = AsyncMock()
+
+        with patch(
+            "planq.providers.redis.Redis.from_url",
+            return_value=client,
+        ):
+            await broker.connect()
+            try:
+                with pytest.raises(
+                    RuntimeError,
+                    match="owned by a different event loop",
+                ):
+                    await asyncio.to_thread(
+                        lambda: asyncio.run(broker.disconnect())
+                    )
+            finally:
+                await broker.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_clean_disconnect_releases_loop_ownership(self) -> None:
+        """A disconnected broker may reconnect on a new event loop."""
+        broker = RedisBroker(dsn="redis://localhost")
+        first_client = MagicMock()
+        first_client.aclose = AsyncMock()
+        second_client = MagicMock()
+        second_client.aclose = AsyncMock()
+
+        with patch(
+            "planq.providers.redis.Redis.from_url",
+            side_effect=[first_client, second_client],
+        ):
+            await broker.connect()
+            await broker.disconnect()
+            assert broker._owner_loop is None
+            assert broker._connect_lock is None
+
+            async def reconnect_and_disconnect() -> None:
+                await broker.connect()
+                await broker.disconnect()
+
+            await asyncio.to_thread(
+                lambda: asyncio.run(reconnect_and_disconnect())
+            )
+
+
 class TestNotConnected:
     """Cover user-facing RuntimeError when broker is not connected."""
 

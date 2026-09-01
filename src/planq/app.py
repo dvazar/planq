@@ -451,14 +451,24 @@ class SyncPlanq(Planq):
         loop.run_forever()
 
     def _run_sync(self, coro: Coroutine[Any, Any, Any]) -> Any:
-        """Submit a coroutine to the background loop and block.
+        """Submit a coroutine to the owner loop and block for its result.
 
-        Args:
-            coro: Coroutine to execute.
-
-        Returns:
-            The coroutine's return value.
+        Raises:
+            RuntimeError: If called from the owner loop, where blocking would
+                deadlock the loop.
         """
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop is self._loop:
+            coro.close()
+            raise RuntimeError(
+                "SyncPlanq cannot block its bound event loop; "
+                "call it from a worker thread or use Planq in async code"
+            )
+
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return future.result()
 
