@@ -79,7 +79,7 @@ def _sigterm_handler(signum: int, frame: object) -> None:
 
 
 def should_retry(
-    exc: Exception,
+    exc: BaseException,
     retry_on: (
         RetryCondition | list[RetryCondition] | tuple[RetryCondition, ...]
     ),
@@ -844,40 +844,6 @@ class PlanqConsumer:
             ctx.pipeline_duration = round(time.perf_counter() - start_perf, 4)
             ctx.pipeline_cpu = round(time.process_time() - start_process, 4)
 
-            if (
-                response is not None
-                and msg.correlation_id is not None
-                and msg.reply_to
-            ):
-                response.headers.setdefault(
-                    Header.TRACEPARENT,
-                    ctx.trace.to_traceparent(),
-                )
-                try:
-                    await self.broker.publish(
-                        msg.reply_to,
-                        response,
-                        headers=response.headers,
-                    )
-                except Exception as exc:
-                    backoff = self._calculate_backoff(msg.delivery_count)
-                    log_ctx = {
-                        "event": LogEvent.PUBLISH_RESPONSE_FAILED,
-                        "delay_seconds": backoff,
-                    }
-                    logger.error(
-                        "Failed to publish response to %(reply_to)r"
-                        " for method %(method)r. Message ID: %(message_id)s."
-                        " Nacking with %(delay_seconds).1fs delay.",
-                        log_ctx,
-                        exc_info=exc,
-                        extra=log_ctx,
-                    )
-                    await msg.nack(backoff)
-                    return
-
-            await msg.ack()
-
         except RetryMessage as exc:
             if (backoff := exc.delay) is None:
                 backoff = self._calculate_backoff(msg.delivery_count)
@@ -943,6 +909,41 @@ class PlanqConsumer:
                 extra=log_ctx,
             )
             await msg.nack(backoff)
+
+        else:
+            if (
+                response is not None
+                and msg.correlation_id is not None
+                and msg.reply_to
+            ):
+                response.headers.setdefault(
+                    Header.TRACEPARENT,
+                    ctx.trace.to_traceparent(),
+                )
+                try:
+                    await self.broker.publish(
+                        msg.reply_to,
+                        response,
+                        headers=response.headers,
+                    )
+                except Exception as exc:
+                    backoff = self._calculate_backoff(msg.delivery_count)
+                    log_ctx = {
+                        "event": LogEvent.PUBLISH_RESPONSE_FAILED,
+                        "delay_seconds": backoff,
+                    }
+                    logger.error(
+                        "Failed to publish response to %(reply_to)r"
+                        " for method %(method)r. Message ID: %(message_id)s."
+                        " Nacking with %(delay_seconds).1fs delay.",
+                        log_ctx,
+                        exc_info=exc,
+                        extra=log_ctx,
+                    )
+                    await msg.nack(backoff)
+                    return
+
+            await msg.ack()
 
     async def _guarded_process(
         self,

@@ -1319,22 +1319,20 @@ class TestTransportIntegration:
         msg.reject.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_guarded_process_logs_broker_operation_failure(
+    async def test_ack_failure_reaches_guard_without_nack(
         self, mock_message
-    ):
-        """Broker operation failure in _guarded_process logs error."""
+    ) -> None:
+        """ACK transport failure is not reclassified as a pipeline error."""
         broker = AsyncMock()
         app = Planq(broker=broker)
         consumer = PlanqConsumer(app, middlewares=[])
 
         @app.task("test.broker_fail", mode=ExecutionMode.ASYNC)
-        async def handler():
+        async def handler() -> str:
             return "success"
 
         msg = mock_message(method="test.broker_fail", id=None)
-        # Both ack and nack must fail for exception to reach _guarded_process
         msg.ack.side_effect = ConnectionError("Ack failed")
-        msg.nack.side_effect = ConnectionError("Nack also failed")
 
         sem = asyncio.Semaphore(1)
         await sem.acquire()
@@ -1342,15 +1340,35 @@ class TestTransportIntegration:
         with patch("planq.consumer.logger") as mock_logger:
             await consumer._guarded_process(msg, sem)
 
-        # Should have 2 error logs:
-        # 1. "Unhandled pipeline error" from msg.ack failing
-        # 2. "Broker operation failed" from _guarded_process
-        #    catching msg.nack failure
-        assert mock_logger.error.call_count == 2
-        last_call = mock_logger.error.call_args_list[-1]
+        msg.ack.assert_awaited_once()
+        msg.nack.assert_not_awaited()
+        assert mock_logger.error.call_count == 1
+        call = mock_logger.error.call_args
+        assert "Broker operation failed" in call.args[0]
+        assert call.kwargs["exc_info"] is not None
+        assert not sem.locked()
 
-        assert "Broker operation failed" in last_call[0][0]
-        assert last_call[1]["exc_info"] is not None
+    @pytest.mark.asyncio
+    async def test_process_message_propagates_ack_failure(
+        self, mock_message
+    ) -> None:
+        """ACK failure escapes without scheduling an explicit retry."""
+        broker = AsyncMock()
+        app = Planq(broker=broker)
+        consumer = PlanqConsumer(app, middlewares=[])
+
+        @app.task("test.ack_fail", mode=ExecutionMode.ASYNC)
+        async def handler() -> str:
+            return "success"
+
+        msg = mock_message(method="test.ack_fail", id=None)
+        msg.ack.side_effect = ConnectionError("Ack failed")
+
+        with pytest.raises(ConnectionError, match="Ack failed"):
+            await consumer._process_message(msg)
+
+        msg.nack.assert_not_awaited()
+        msg.reject.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_guarded_process_releases_semaphore_on_success(

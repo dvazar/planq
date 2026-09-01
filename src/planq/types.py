@@ -15,7 +15,7 @@ All aliases use Python 3.12 ``type`` statement syntax.
 +-----------------+---------------------------------------------------+
 | Seconds         | ``float``                                         |
 +-----------------+---------------------------------------------------+
-| RetryCondition  | ``Type[Exception] | Callable[[Exception], bool]`` |
+| RetryCondition  | ``Type[BaseException] | Callable[[BaseException], bool]`` |
 +-----------------+---------------------------------------------------+
 """
 
@@ -38,9 +38,9 @@ type Headers = dict[str, str]
 #: A duration expressed in fractional seconds.
 type Seconds = float
 
-#: An exception type or predicate function used to determine whether an
-#: exception should trigger a retry attempt.
-RetryCondition = Type[Exception] | Callable[[Exception], bool]
+#: An exception type or predicate function used to determine whether a
+#: ``BaseException`` should trigger a retry attempt.
+RetryCondition = Type[BaseException] | Callable[[BaseException], bool]
 
 
 T = TypeVar("T")

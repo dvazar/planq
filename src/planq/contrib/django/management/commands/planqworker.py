@@ -7,8 +7,20 @@ import importlib
 
 from django.core.management.base import BaseCommand
 
+from planq.app import Planq, SyncPlanq
 from planq.consumer import PlanqConsumer
 from planq.models import ConsumerSettings
+
+
+async def _run_worker(
+    app: Planq,
+    consumer: PlanqConsumer,
+    queues: list[str],
+) -> None:
+    """Bind synchronous producers to the consumer loop and run the worker."""
+    if isinstance(app, SyncPlanq):
+        app.bind_loop(asyncio.get_running_loop())
+    await consumer.run(*queues)
 
 
 class Command(BaseCommand):
@@ -91,7 +103,7 @@ class Command(BaseCommand):
             process_workers=process_workers,
         )
 
-        asyncio.run(consumer.run(*queues))
+        asyncio.run(_run_worker(app, consumer, queues))
 
     def _build_consumer_settings(
         self,

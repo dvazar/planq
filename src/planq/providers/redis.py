@@ -511,12 +511,26 @@ class RedisBroker(BaseBroker):
         self._scheduler_task: asyncio.Task[None] | None = None
         self._migrate_script: AsyncScript | None = None
         self._connect_lock: asyncio.Lock | None = None
+        self._owner_loop: asyncio.AbstractEventLoop | None = None
+
+    def _validate_owner_loop(self) -> None:
+        """Claim the current loop or reject access from another loop."""
+        running_loop = asyncio.get_running_loop()
+        if self._owner_loop is None:
+            self._owner_loop = running_loop
+            return
+        if self._owner_loop is not running_loop:
+            raise RuntimeError(
+                "RedisBroker is owned by a different event loop; "
+                "use one broker instance per loop"
+            )
 
     @override
     async def connect(self) -> None:
         """Create a Redis client and start the scheduler task.
 
-        Idempotent and race-safe: calling :meth:`connect` on an
+        A connected broker is single-loop; a clean disconnect releases
+        ownership. Idempotent and race-safe: calling :meth:`connect` on an
         already-connected broker is a no-op fast path; concurrent
         first-time calls are serialized so only one client is
         created. Calling :meth:`connect` after a previous
@@ -531,6 +545,7 @@ class RedisBroker(BaseBroker):
         Producer-only instances skip both and rely on some other
         consumer-equipped process to migrate delayed messages.
         """
+        self._validate_owner_loop()
         if self._client is not None:
             return
         if self._connect_lock is None:
@@ -554,7 +569,13 @@ class RedisBroker(BaseBroker):
 
     @override
     async def disconnect(self) -> None:
-        """Cancel the scheduler and close the Redis client."""
+        """Cancel the scheduler and close the Redis client.
+
+        A connected broker is single-loop. A clean disconnect releases
+        ownership, allowing a later connection from another event loop.
+        """
+        if self._owner_loop is not None:
+            self._validate_owner_loop()
         if self._scheduler_task is not None:
             self._scheduler_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -565,6 +586,9 @@ class RedisBroker(BaseBroker):
             await self._client.aclose()
             self._client = None
             self._migrate_script = None
+
+        self._connect_lock = None
+        self._owner_loop = None
 
     @override
     async def publish(
